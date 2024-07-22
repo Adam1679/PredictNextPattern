@@ -57,17 +57,11 @@ BASE_URL = "https://data.binance.vision/"
 F_REST_HOST: str = "https://fapi.binance.com"
 START_DATE = date(int(YEARS[0]), MONTHS[0], 1)
 END_DATE = datetime.date(datetime.now())
-S_DEFAULTS = []
-try:
-    with open("./research/data_binance/INSTRESTED_SYMBOLS.txt", "r") as f:
-        for line in f.readlines():
-            S_DEFAULTS.append(line.strip())
-except:
-    pass
+
 UM_ASSET_INFO = {}
 try:
-    if Path("research/data_binance/utils/exchange_info_usdm_20230823.json").exists():
-        with open("research/data_binance/utils/exchange_info_usdm_20230823.json", "r") as f:
+    if Path("./utils/exchange_info_usdm_20230823.json").exists():
+        with open("./utils/exchange_info_usdm_20230823.json", "r") as f:
             info = json.load(f)
     else:
         print("exchange_info_usdm_20230823.json not found")
@@ -197,7 +191,7 @@ def download_file(base_path, file_name, date_range=None, folder=None):
 
     try:
         download_url = get_download_url(download_path)
-        dl_file = urllib.request.urlopen(download_url)
+        dl_file = urllib.request.urlopen(download_url, timeout=10)
         length = dl_file.getheader("content-length")
         if length:
             length = int(length)
@@ -219,7 +213,8 @@ def download_file(base_path, file_name, date_range=None, folder=None):
 
     except urllib.error.HTTPError:
         print("\nFile not found: {}".format(download_url))
-
+    except Exception as e:
+        print("\nError downloading file: {}".format(e))
     finally:
         tmp_save_path = save_path + ".unconfirmed"
         if os.path.exists(tmp_save_path):
@@ -283,7 +278,7 @@ def get_parser(parser_type):
         dest="symbols",
         nargs="+",
         help="Single symbol or multiple symbols separated by space",
-        default=S_DEFAULTS,
+        default=None,
     )
     parser.add_argument(
         "-y",

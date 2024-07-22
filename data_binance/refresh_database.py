@@ -5,9 +5,6 @@ from pathlib import Path
 
 import pandas as pd
 
-# from binance_util import query_ls_history
-from download_binance_klines import download_5m_ls_data
-
 root = Path(os.path.expanduser("~/binance_data"))
 binance_data_root = Path(os.path.expanduser("~/binance_data/data"))
 
@@ -36,15 +33,6 @@ def removeEmptyFolders(root, removebinance_data_root=True):
         return True
     else:
         return False
-
-
-def get_symbolsV2(symbol_type="future"):
-
-    if symbol_type == "future":
-        df = pd.read_csv(root / "perpetual_symbol_info_selected.csv", index_col="symbol")
-        return list(df.index)
-    else:
-        raise NotImplementedError()
 
 
 def get_symbols(path):
@@ -130,6 +118,13 @@ def delete_duplicate_data(daily_binance_data_root, monthly_binance_data_root):
 
 
 def _fake_data(symbol, late_days, root):
+    """
+    1. 从BUSD合约数据中截取最近late_days天的数据
+    2. 从USDT合约数据中截取最近late_days天的数据
+    3. 从现货数据中截取最近late_days天的数据
+    4. 合并数据
+    5. 保存到fake数据文件中
+    """
     print(f"processing {symbol} ... ")
     num_minutes = late_days * 24 * 60
     future_data_path = root / f"{symbol}BUSD-1m-perpetual.csv"
@@ -237,8 +232,6 @@ def replace_volume_for_futures_data(symbol):
 
 if __name__ == "__main__":
     # ---- * ---- macro variables
-    from utils.binance_util import S_DEFAULTS
-
     removeEmptyFolders(binance_data_root)
     spot_path1 = binance_data_root / "spot" / "monthly" / "klines"
     spot_path2 = binance_data_root / "spot" / "daily" / "klines"
@@ -246,33 +239,29 @@ if __name__ == "__main__":
     futures_path2 = binance_data_root / "futures" / "um" / "daily" / "klines"
 
     # ---- * ---- for refresh current spot dataset
-    # symbols1 = get_symbols(futures_path1)  # pure symbols like BTC, ETH
-    # symbols2 = get_symbols(futures_path2)
+    symbols1 = get_symbols(futures_path1)  # pure symbols like BTC, ETH
+    symbols2 = get_symbols(futures_path2)
 
-    # spot_symbols = symbols1 | symbols2
-    # all_spot_symbols = []
-    # for symbol in spot_symbols:
-    #     all_spot_symbols.append(symbol + "USDT")
-    #     all_spot_symbols.append(symbol + "BUSD")
-    # download_spots(all_spot_symbols)
+    spot_symbols = symbols1 | symbols2
+    all_spot_symbols = []
+    for symbol in spot_symbols:
+        all_spot_symbols.append(symbol + "USDT")
+        all_spot_symbols.append(symbol + "BUSD")
+    download_spots(all_spot_symbols)
 
-    # symbols1 = get_symbols(futures_path1)
-    # symbols2 = get_symbols(futures_path2)
-    # future_symbols = symbols1 | symbols2
-    # all_symbols = []
-    # for symbol in future_symbols:
-    #     all_symbols.append(symbol + "USDT")
-    #     all_symbols.append(symbol + "BUSD")
-    # download_futures(all_symbols)
-    # for symbol in all_spot_symbols:
-    #     query_ls_history(symbol, folder=binance_data_root)
-    # delete_duplicate_data(
-    #     monthly_binance_data_root=spot_path1, daily_binance_data_root=spot_path2
-    # )
-    # delete_duplicate_data(
-    #     monthly_binance_data_root=futures_path1, daily_binance_data_root=futures_path2
-    # )
-    # os.system("bash ./concat_all_zip_files.bash")
+    symbols1 = get_symbols(futures_path1)
+    symbols2 = get_symbols(futures_path2)
+    future_symbols = symbols1 | symbols2
+    all_symbols = []
+    for symbol in future_symbols:
+        all_symbols.append(symbol + "USDT")
+        all_symbols.append(symbol + "BUSD")
+    download_futures(all_symbols)
+    delete_duplicate_data(monthly_binance_data_root=spot_path1, daily_binance_data_root=spot_path2)
+    delete_duplicate_data(
+        monthly_binance_data_root=futures_path1, daily_binance_data_root=futures_path2
+    )
+    os.system("bash ./concat_all_zip_files.bash")
     # print("beging faking data...")
     # fake_all_data(spot_symbols, late_days=3, root=root)
     # print("beging faking data ... done")
@@ -280,25 +269,25 @@ if __name__ == "__main__":
     # for symbol in future_symbols:
     #     replace_volume_for_futures_data(symbol)
     # print("beging replace volume data ... done")
-    # removeEmptyFolders(binance_data_root)
+    removeEmptyFolders(binance_data_root)
 
     # ---- * ---- for refresh current future dataset
-    removeEmptyFolders(binance_data_root)
-    future_symbols = S_DEFAULTS
-    download_futures(future_symbols, trades=False)
-    download_5m_ls_data(future_symbols, binance_data_root)
-    delete_duplicate_data(
-        monthly_binance_data_root=futures_path1, daily_binance_data_root=futures_path2
-    )
-    os.system("bash ./utils/concat_all_zip_files.bash")
-    # print("beging faking data...")
-    # fake_all_data(future_symbols, late_days=3, root=root)
-    print("beging faking data ... done")
-    # print("beging replace volume data ...")
-    # for symbol in future_symbols:
-    # replace_volume_for_futures_data(symbol)
-    # print("beging replace volume data ... done")
-    removeEmptyFolders(binance_data_root)
+    # removeEmptyFolders(binance_data_root)
+    # future_symbols = S_DEFAULTS
+    # download_futures(future_symbols, trades=False)
+    # download_5m_ls_data(future_symbols, binance_data_root)
+    # delete_duplicate_data(
+    #     monthly_binance_data_root=futures_path1, daily_binance_data_root=futures_path2
+    # )
+    # os.system("bash ./utils/concat_all_zip_files.bash")
+    # # print("beging faking data...")
+    # # fake_all_data(future_symbols, late_days=3, root=root)
+    # print("beging faking data ... done")
+    # # print("beging replace volume data ...")
+    # # for symbol in future_symbols:
+    # # replace_volume_for_futures_data(symbol)
+    # # print("beging replace volume data ... done")
+    # removeEmptyFolders(binance_data_root)
 
     # ---- * ---- for download new spot dataset
 

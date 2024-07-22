@@ -1,9 +1,14 @@
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import DAILY_INTERVALS, END_DATE, MAX_DAYS, START_DATE, datetime, query_ls_history
+from datetime import datetime
 
 import pandas as pd
 from utils.binance_util import (
+    DAILY_INTERVALS,
+    END_DATE,
+    MAX_DAYS,
+    START_DATE,
     convert_to_date_object,
     download_file,
     get_parser,
@@ -16,11 +21,44 @@ from utils.binance_util import (
 # python download_binance.py -s ETHUSDT XRPUSDT LTCUSDT EOSUSDT ETCUSDT -startDate 2022-02-01 -folder .vscode -i 1m
 def get_all_symbols(type):
     if type == "um":
-        response = urllib.request.urlopen("https://fapi.binance.com/fapi/v1/exchangeInfo").read()
+        cache_file_path = "utils/um_exchangeInfo.json"
+        if os.path.exists(cache_file_path):
+            with open(cache_file_path, "r") as f:
+                response = f.read()
+        else:
+            response = (
+                urllib.request.urlopen("https://fapi.binance.com/fapi/v1/exchangeInfo")
+                .read()
+                .decode("utf-8")
+            )
+            with open(cache_file_path, "w") as f:
+                f.write(response)
     elif type == "cm":
-        response = urllib.request.urlopen("https://dapi.binance.com/dapi/v1/exchangeInfo").read()
+        cache_file_path = "utils/cm_exchangeInfo.json"
+        if os.path.exists(cache_file_path):
+            with open(cache_file_path, "r") as f:
+                response = f.read()
+        else:
+            response = (
+                urllib.request.urlopen("https://dapi.binance.com/dapi/v1/exchangeInfo")
+                .read()
+                .decode("utf-8")
+            )
+            with open(cache_file_path, "w") as f:
+                f.write(response)
     else:
-        response = urllib.request.urlopen("https://api.binance.com/api/v3/exchangeInfo").read()
+        cache_file_path = "utils/spot_exchangeInfo.json"
+        if os.path.exists(cache_file_path):
+            with open(cache_file_path, "r") as f:
+                response = f.read()
+        else:
+            response = (
+                urllib.request.urlopen("https://api.binance.com/api/v3/exchangeInfo")
+                .read()
+                .decode("utf-8")
+            )
+            with open(cache_file_path, "w") as f:
+                f.write(response)
     return list(map(lambda symbol: symbol["symbol"], json.loads(response)["symbols"]))
 
 
@@ -58,7 +96,7 @@ def download_monthly_klines(
         print(
             "[{}/{}] - start download monthly {} klines ".format(current + 1, num_symbols, symbol)
         )
-        excecutors = ThreadPoolExecutor(32)
+        excecutors = ThreadPoolExecutor(16)
         for interval in intervals:
             for year in years:
                 for month in months:
@@ -118,9 +156,10 @@ def download_daily_klines(
     # Get valid intervals for daily
     intervals = list(set(intervals) & set(DAILY_INTERVALS))
     print("Found {} symbols".format(num_symbols))
-    excecutors = ThreadPoolExecutor(16)
+
     for symbol in symbols:
         print("[{}/{}] - start download daily {} klines ".format(current + 1, num_symbols, symbol))
+        excecutors = ThreadPoolExecutor(16)
         for interval in intervals:
             for date in dates:
                 current_date = convert_to_date_object(date)
@@ -144,22 +183,15 @@ def download_daily_klines(
                             date_range,
                             folder,
                         )
-
+        excecutors.shutdown()
         current += 1
-
-
-def download_5m_ls_data(symbols, folder):
-    with ThreadPoolExecutor(16) as excecutors:
-        for symbol in symbols:
-            excecutors.submit(query_ls_history, symbol, folder)
-            # query_ls_history(symbol, folder)
 
 
 if __name__ == "__main__":
     parser = get_parser("klines")
     args = parser.parse_args(sys.argv[1:])
 
-    if not args.symbols:
+    if args.symbols is None:
 
         symbols = get_all_symbols(args.type)
         symbols = [symbol for symbol in symbols if symbol.upper().endswith("USDT")]

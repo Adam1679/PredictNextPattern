@@ -1,9 +1,9 @@
-root=/Users/bytedance/binance_data
-csv_root=/Users/bytedance/binance_data/csv_data
+root=~/binance_data
+csv_root=~/binance_data/csv_data
 cd $root
 mkdir -p $csv_root
 echo "Processing FUTURES data"
-for symbol in $(ls /Users/bytedance/binance_data/data/futures/um/monthly/klines); do
+for symbol in $(ls ~/binance_data/data/futures/um/monthly/klines); do
     echo "process $symbol data ..."
     monthly_format=data/futures/um/monthly/klines/$symbol/1m/
     daily_format=data/futures/um/daily/klines/$symbol/1m/
