@@ -4,9 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List
-
+from itertools import product
 import pandas as pd
-from datasets import Dataset
+from datasets import Dataset, DatasetDict
 from huggingface_hub import HfApi, create_repo
 from tqdm import tqdm
 from utils.binance_util import INTERVALS, TRADING_TYPE
@@ -142,7 +142,7 @@ def process_zip_files(zip_files: List[str]) -> Dataset:
     :return: Hugging Face Dataset
     """
     all_data = []
-
+    
     with ThreadPoolExecutor(16) as workers:
 
         def _add_meta(data, symbol, type, interval):
@@ -172,6 +172,8 @@ def process_zip_files(zip_files: List[str]) -> Dataset:
     # Convert interval to timedelta
     interval_to_timedelta = {
         "1m": pd.Timedelta(minutes=1),
+        "15m": pd.Timedelta(minutes=15),
+        "30m": pd.Timedelta(minutes=30),
         "1h": pd.Timedelta(hours=1),
         "4h": pd.Timedelta(hours=4),
         "1d": pd.Timedelta(days=1),
@@ -216,14 +218,16 @@ def process_zip_files(zip_files: List[str]) -> Dataset:
     final_df = final_df.drop_duplicates(subset=["open_timestamp", "symbol", "type", "interval"])
     final_df = final_df.sort_values(by=["symbol", "type", "interval", "open_timestamp"])
 
+    types = list(final_df["type"].unique())
+    intervals = list(final_df["interval"].unique())
     print("Total rows:")
     print(final_df.groupby(["symbol", "type", "interval"])["open_timestamp"].count())
     print("Missing data rows:")
     print(final_df.groupby(["symbol", "type", "interval"])["missing"].sum())
-    return Dataset.from_pandas(final_df)
+    return Dataset.from_pandas(final_df), types, intervals
 
 
-def upload_to_huggingface(dataset: Dataset, repo_name: str, token: str):
+def upload_to_huggingface(dataset: Dataset, repo_name: str, types: List[str], intervals: List[str]):
     """
     Upload a dataset to Hugging Face.
 
@@ -233,19 +237,25 @@ def upload_to_huggingface(dataset: Dataset, repo_name: str, token: str):
     """
     # Create the repository if it doesn't exist
     HfApi()
-    create_repo(repo_name, token=token, repo_type="dataset", exist_ok=True)
-
+    create_repo(repo_name, repo_type="dataset", exist_ok=True)
+    data_dict = {}
+    for type_str, interval in product(types, intervals):
+        # Filter dataset
+        filtered_dataset = dataset.filter(
+            lambda x: x["type"] == type_str and x["interval"] == interval
+        )
+        data_dict[f"{type_str}-{interval}"] = filtered_dataset
+    data_dict_hf = DatasetDict(data_dict)
     # Push the dataset to the Hugging Face Hub
-    dataset.push_to_hub(repo_name, token=token)
+    data_dict_hf.push_to_hub(repo_name)
 
 
-def main(root_dir: str, repo_name: str, token: str, symbols=[]):
+def main(root_dir: str, repo_name: str, symbols=[]):
     """
     Main function to run the entire pipeline.
 
     :param root_dir: Root directory containing ZIP files
     :param repo_name: Name of the repository to create/use on Hugging Face
-    :param token: Hugging Face API token
     """
     # Get all ZIP files
     zip_files = get_zip_files(root_dir)
@@ -257,18 +267,17 @@ def main(root_dir: str, repo_name: str, token: str, symbols=[]):
     print(f"Found {len(zip_files)} ZIP files")
 
     # Process ZIP files and create dataset
-    dataset = process_zip_files(zip_files)
+    dataset, types, intervals = process_zip_files(zip_files)
     print(f"Created dataset with {len(dataset)} rows")
 
     # Upload to Hugging Face
-    upload_to_huggingface(dataset, repo_name, token)
-    print(f"Dataset uploaded to Hugging Face: https://huggingface.co/datasets/{repo_name}")
+    # upload_to_huggingface(dataset, repo_name)
+    # print(f"Dataset uploaded to Hugging Face: https://huggingface.co/datasets/{repo_name}")
 
 
 if __name__ == "__main__":
     root_dir = os.path.expanduser("~/binance_data/data/spot")
     # repo_name = "adamzzzz/binance-daily-klines-20240721"
     repo_name = "adamzzzz/binance-1m-klines-20240721"
-    token = "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"  # Make sure to keep this secret!
-    # symbols = ['BTCUSDT']
-    main(root_dir, repo_name, token)
+    symbols = ['BTCUSDT', 'ETHUSDT']
+    main(root_dir, repo_name, symbols)
