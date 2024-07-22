@@ -67,6 +67,7 @@ try:
     else:
         print("exchange_info_usdm_20230823.json not found")
         info = requests.get("https://fapi.binance.com/fapi/v1/exchangeInfo").json()
+        print("[INFO] ASSET_INFO updated")
     for asset_info in info["symbols"]:
         asset_name = asset_info["symbol"]
         UM_ASSET_INFO[asset_info["symbol"]] = BinanceUmContractInfo(
@@ -76,7 +77,7 @@ try:
             asset_info["quantityPrecision"],
             asset_info["baseAssetPrecision"],
         )
-    print("[INFO] ASSET_INFO updated")
+    
 except Exception as e:
     print(f"[WARNING], exception in getting asset_info from binance {str(e)}")
 
