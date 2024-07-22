@@ -1,23 +1,25 @@
 import os
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
-from itertools import product
 from typing import Any, Dict, List
+
 import pandas as pd
 from datasets import Dataset
 from huggingface_hub import HfApi, create_repo
 from tqdm import tqdm
 from utils.binance_util import INTERVALS, TRADING_TYPE
-from collections import defaultdict
+
 INTERVAL_TO_TIMEDELT = {
-        "1m": pd.Timedelta(minutes=1),
-        "15m": pd.Timedelta(minutes=15),
-        "30m": pd.Timedelta(minutes=30),
-        "1h": pd.Timedelta(hours=1),
-        "4h": pd.Timedelta(hours=4),
-    }
+    "1m": pd.Timedelta(minutes=1),
+    "15m": pd.Timedelta(minutes=15),
+    "30m": pd.Timedelta(minutes=30),
+    "1h": pd.Timedelta(hours=1),
+    "4h": pd.Timedelta(hours=4),
+}
+
 
 @dataclass
 class BinanceKlines:
@@ -180,11 +182,15 @@ def process_zip_files(zip_files: List[str]) -> Dataset:
 
     # Group by symbol, type, and interval
     grouped = df.groupby(["symbol", "type", "interval"])
-    n_samples = len(df['symbol'].unique())
-    n_type = len(df['type'].unique())
-    n_interval = len(df['interval'].unique())
+    n_samples = len(df["symbol"].unique())
+    n_type = len(df["type"].unique())
+    n_interval = len(df["interval"].unique())
     filled_data = []
-    for (symbol, type, interval), group in tqdm(grouped, total=n_samples * n_type * n_interval, desc="Sorting, Reindexing, and Forward Filling..."):
+    for (symbol, type, interval), group in tqdm(
+        grouped,
+        total=n_samples * n_type * n_interval,
+        desc="Sorting, Reindexing, and Forward Filling...",
+    ):
         # Sort by timestamp
         group = group.sort_values("open_timestamp")
 
@@ -225,6 +231,7 @@ def process_zip_files(zip_files: List[str]) -> Dataset:
     print(final_df.groupby(["symbol", "type", "interval"])["missing"].sum())
     return Dataset.from_pandas(final_df)
 
+
 def process_zip_files_grouped(zip_files: List[str]) -> Dataset:
     """
     Process a list of ZIP files, fill missing data using forward fill, add a 'missing' flag,
@@ -237,8 +244,9 @@ def process_zip_files_grouped(zip_files: List[str]) -> Dataset:
     for zip_file in zip_files:
         symbol, type, interval = get_meta_from_type(zip_file)
         zip_files_grouped[(symbol, type, interval)].append(zip_file)
-        
+
     with ProcessPoolExecutor(32) as workers:
+
         def _add_meta(data, symbol, type, interval):
             data["symbol"] = symbol
             data["type"] = type
@@ -280,15 +288,15 @@ def process_zip_files_grouped(zip_files: List[str]) -> Dataset:
             filled_group["type"] = type
             filled_group["interval"] = interval
             return filled_group
+
         futures = []
         all_df_data = []
         for (symbol, type_str, interval), group_zip_files in zip_files_grouped.items():
             futures.append(workers.submit(_worker, group_zip_files, symbol, type_str, interval))
-        
+
         for future in as_completed(futures):
             parsed_data = future.result()
             all_df_data.append(parsed_data)
-            
 
     final_df = pd.concat(all_df_data, axis=0, ignore_index=True)
 
@@ -302,6 +310,7 @@ def process_zip_files_grouped(zip_files: List[str]) -> Dataset:
     print(final_df.groupby(["symbol", "type", "interval"])["missing"].sum())
     return Dataset.from_pandas(final_df)
 
+
 def upload_to_huggingface(dataset: Dataset, repo_name: str, type_str: str, interval: str):
     """
     Upload a dataset to Hugging Face.
@@ -312,14 +321,18 @@ def upload_to_huggingface(dataset: Dataset, repo_name: str, type_str: str, inter
     """
     # Create the repository if it doesn't exist
     HfApi()
-    create_repo(repo_name, repo_type="dataset", exist_ok=True, token='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')
+    create_repo(
+        repo_name, repo_type="dataset", exist_ok=True, token="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"
+    )
     # for type_str, interval in product(types, intervals):
     #     # Filter dataset
     #     filtered_dataset = dataset.filter(
     #         lambda x: x["type"] == type_str and x["interval"] == interval
     #     )
     #     # Push the dataset to the Hugging Face Hub
-    dataset.push_to_hub(repo_name, split=f"{type_str}.{interval}", token='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')
+    dataset.push_to_hub(
+        repo_name, split=f"{type_str}.{interval}", token="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"
+    )
 
 
 def main(root_dir: str, repo_name: str, type_str, interval, symbols=[]):
@@ -333,8 +346,8 @@ def main(root_dir: str, repo_name: str, type_str, interval, symbols=[]):
     zip_files = get_zip_files(root_dir)
     if symbols:
         zip_files = [f for f in zip_files if any(symbol in f for symbol in symbols)]
-    _type_str = type_str.lower() + '/'
-    _interval_str = interval.lower() + '/'
+    _type_str = type_str.lower() + "/"
+    _interval_str = interval.lower() + "/"
     zip_files = [f for f in zip_files if _type_str in f and _interval_str in f]
     if len(zip_files) == 0:
         print("No ZIP files found")
@@ -357,15 +370,11 @@ if __name__ == "__main__":
     # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='spot', interval='1h')
     # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='spot', interval='30m')
     # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='spot', interval='15m')
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='spot', interval='5m')
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='spot', interval='1m')
-    
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='um', interval='1h')
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='um', interval='30m')
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='um', interval='15m')
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='um', interval='5m')
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='um', interval='1m')
-    
-    
-    
-    
+    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="spot", interval="5m")
+    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="spot", interval="1m")
+
+    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="1h")
+    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="30m")
+    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="15m")
+    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="5m")
+    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="1m")

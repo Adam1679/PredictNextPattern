@@ -77,7 +77,7 @@ try:
             asset_info["quantityPrecision"],
             asset_info["baseAssetPrecision"],
         )
-    
+
 except Exception as e:
     print(f"[WARNING], exception in getting asset_info from binance {str(e)}")
 
