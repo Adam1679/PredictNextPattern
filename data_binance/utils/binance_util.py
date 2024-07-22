@@ -14,6 +14,7 @@ import pytz
 import requests
 
 UTC_TZ = pytz.UTC
+DATA_ROOT = os.path.expanduser("~/binance_data")
 
 
 def generate_datetime(timestamp: float) -> datetime:
@@ -325,7 +326,7 @@ def get_parser(parser_type):
         "-folder",
         dest="folder",
         type=check_directory,
-        default="/Volumes/AdamDrive/binance_data",
+        default=DATA_ROOT,
         help="Directory to store the downloaded data",
     )
     parser.add_argument(
