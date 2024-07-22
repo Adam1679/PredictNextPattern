@@ -3,10 +3,11 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List
 from itertools import product
+from typing import Any, Dict, List
+
 import pandas as pd
-from datasets import Dataset, DatasetDict
+from datasets import Dataset
 from huggingface_hub import HfApi, create_repo
 from tqdm import tqdm
 from utils.binance_util import INTERVALS, TRADING_TYPE
@@ -143,7 +144,7 @@ def process_zip_files(zip_files: List[str]) -> Dataset:
     :return: Hugging Face Dataset
     """
     all_data = []
-    
+
     with ThreadPoolExecutor(16) as workers:
 
         def _add_meta(data, symbol, type, interval):
@@ -268,12 +269,12 @@ def main(root_dir: str, repo_name: str, symbols=[]):
     print(f"Created dataset with {len(dataset)} rows")
 
     # Upload to Hugging Face
-    # upload_to_huggingface(dataset, repo_name)
-    # print(f"Dataset uploaded to Hugging Face: https://huggingface.co/datasets/{repo_name}")
+    upload_to_huggingface(dataset, repo_name)
+    print(f"Dataset uploaded to Hugging Face: https://huggingface.co/datasets/{repo_name}")
 
 
 if __name__ == "__main__":
     # repo_name = "adamzzzz/binance-1m-klines-20240721"
     repo_name = "adamzzzz/binance-klines-20240721"
-    main( os.path.expanduser("~/binance_data/data/spot"), repo_name)
-    main( os.path.expanduser("~/binance_data/data/futures/um"), repo_name)
+    main(os.path.expanduser("~/binance_data/data/spot"), repo_name)
+    main(os.path.expanduser("~/binance_data/data/futures/um"), repo_name)
