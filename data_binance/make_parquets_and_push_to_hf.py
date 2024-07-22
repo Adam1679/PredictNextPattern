@@ -121,6 +121,7 @@ def parse_csv_content(content: bytes) -> List[Dict[str, Any]]:
 
 def get_meta_from_type(path_str):
     # e.g /Users/adam/binance_data/data/futures/um/daily/klines/BCHUSDT/1d/BCHUSDT-1d-2024-06-18.zip
+    # e.g binance_data/data/spot/daily/klines/ATAUSDT/1h/ATAUSDT-1h-2024-07-08.zip
     path = path_str.split("/")
     if path[-1].endswith(".zip"):
         interval = path[-2].lower()
@@ -176,7 +177,6 @@ def process_zip_files(zip_files: List[str]) -> Dataset:
         "30m": pd.Timedelta(minutes=30),
         "1h": pd.Timedelta(hours=1),
         "4h": pd.Timedelta(hours=4),
-        "1d": pd.Timedelta(days=1),
     }
 
     # Group by symbol, type, and interval
@@ -238,16 +238,13 @@ def upload_to_huggingface(dataset: Dataset, repo_name: str, types: List[str], in
     # Create the repository if it doesn't exist
     HfApi()
     create_repo(repo_name, repo_type="dataset", exist_ok=True)
-    data_dict = {}
     for type_str, interval in product(types, intervals):
         # Filter dataset
         filtered_dataset = dataset.filter(
             lambda x: x["type"] == type_str and x["interval"] == interval
         )
-        data_dict[f"{type_str}-{interval}"] = filtered_dataset
-    data_dict_hf = DatasetDict(data_dict)
-    # Push the dataset to the Hugging Face Hub
-    data_dict_hf.push_to_hub(repo_name)
+        # Push the dataset to the Hugging Face Hub
+        filtered_dataset.push_to_hub(repo_name, split=f"{type_str}-{interval}")
 
 
 def main(root_dir: str, repo_name: str, symbols=[]):
@@ -276,8 +273,7 @@ def main(root_dir: str, repo_name: str, symbols=[]):
 
 
 if __name__ == "__main__":
-    root_dir = os.path.expanduser("~/binance_data/data/spot")
-    # repo_name = "adamzzzz/binance-daily-klines-20240721"
-    repo_name = "adamzzzz/binance-1m-klines-20240721"
-    symbols = ['BTCUSDT', 'ETHUSDT']
-    main(root_dir, repo_name, symbols)
+    # repo_name = "adamzzzz/binance-1m-klines-20240721"
+    repo_name = "adamzzzz/binance-klines-20240721"
+    main( os.path.expanduser("~/binance_data/data/spot"), repo_name)
+    main( os.path.expanduser("~/binance_data/data/futures/um"), repo_name)
