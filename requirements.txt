@@ -6,3 +6,5 @@ datasets
 tiktoken 
 wandb 
 tqdm
+deepspeed
+accelerate==0.32.1
