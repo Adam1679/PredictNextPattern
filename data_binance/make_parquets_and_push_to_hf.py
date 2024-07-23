@@ -14,6 +14,7 @@ from utils.binance_util import INTERVALS, TRADING_TYPE
 
 INTERVAL_TO_TIMEDELT = {
     "1m": pd.Timedelta(minutes=1),
+    "5m": pd.Timedelta(minutes=5),
     "15m": pd.Timedelta(minutes=15),
     "30m": pd.Timedelta(minutes=30),
     "1h": pd.Timedelta(hours=1),
@@ -39,6 +40,14 @@ class BinanceKlines:
     type: str
     interval: str
     missing: bool
+
+
+def _add_meta(data, symbol, type, interval):
+    data["symbol"] = symbol
+    data["type"] = type
+    data["interval"] = interval
+    data["missing"] = False  # Add missing flag, initially set to False for all original data
+    return BinanceKlines(**data)
 
 
 def get_zip_files(root_dir: str) -> List[str]:
@@ -155,15 +164,6 @@ def process_zip_files(zip_files: List[str]) -> Dataset:
 
     with ThreadPoolExecutor(16) as workers:
 
-        def _add_meta(data, symbol, type, interval):
-            data["symbol"] = symbol
-            data["type"] = type
-            data["interval"] = interval
-            data[
-                "missing"
-            ] = False  # Add missing flag, initially set to False for all original data
-            return BinanceKlines(**data)
-
         def _worker(zip_file):
             raw_content = uncompress_zip(zip_file)
             parsed_data = parse_csv_content(raw_content)
@@ -224,12 +224,47 @@ def process_zip_files(zip_files: List[str]) -> Dataset:
     # Remove duplicates and sort
     final_df = final_df.drop_duplicates(subset=["open_timestamp", "symbol", "type", "interval"])
     final_df = final_df.sort_values(by=["symbol", "type", "interval", "open_timestamp"])
-
+    # if "__index_level_0__" in final_df.columns:
+    # final_df = final_df.drop(columns=['__index_level_0__'])
     print("Total rows:")
     print(final_df.groupby(["symbol", "type", "interval"])["open_timestamp"].count())
     print("Missing data rows:")
     print(final_df.groupby(["symbol", "type", "interval"])["missing"].sum())
     return Dataset.from_pandas(final_df)
+
+
+def _worker(local_zip_files, symbol, type, interval):
+    all_data = []
+    for zip_file in local_zip_files:
+        raw_content = uncompress_zip(zip_file)
+        parsed_data = parse_csv_content(raw_content)
+        parsed_data = list(map(lambda x: _add_meta(x, symbol, type, interval), parsed_data))
+        all_data.extend(parsed_data)
+    group = pd.DataFrame(all_data)
+    group = group.sort_values(by=["symbol", "type", "interval"])
+    group = group.drop_duplicates(subset=["symbol", "type", "interval", "open_timestamp"])
+    # Create a complete date range
+    start_time = group["open_timestamp"].min()
+    end_time = group["open_timestamp"].max()
+    complete_range = pd.date_range(
+        start=start_time, end=end_time, freq=INTERVAL_TO_TIMEDELT[interval]
+    )
+
+    # Reindex the group with the complete range and forward fill
+    filled_group = group.set_index("open_timestamp").reindex(complete_range)
+    # Mark missing data
+    filled_group["missing"] = filled_group["missing"].isna()
+
+    # Forward fill
+    filled_group = filled_group.ffill()
+
+    # Reset index and add back the metadata columns
+    filled_group = filled_group.reset_index()
+    filled_group["open_timestamp"] = filled_group["index"]
+    filled_group["symbol"] = symbol
+    filled_group["type"] = type
+    filled_group["interval"] = interval
+    return filled_group
 
 
 def process_zip_files_grouped(zip_files: List[str]) -> Dataset:
@@ -244,57 +279,16 @@ def process_zip_files_grouped(zip_files: List[str]) -> Dataset:
     for zip_file in zip_files:
         symbol, type, interval = get_meta_from_type(zip_file)
         zip_files_grouped[(symbol, type, interval)].append(zip_file)
-
+    print(f"Found {len(zip_files_grouped)} groups of ZIP files")
     with ProcessPoolExecutor(32) as workers:
-
-        def _add_meta(data, symbol, type, interval):
-            data["symbol"] = symbol
-            data["type"] = type
-            data["interval"] = interval
-            data[
-                "missing"
-            ] = False  # Add missing flag, initially set to False for all original data
-            return BinanceKlines(**data)
-
-        def _worker(local_zip_files, symbol, type, interval):
-            all_data = []
-            for zip_file in local_zip_files:
-                raw_content = uncompress_zip(zip_file)
-                parsed_data = parse_csv_content(raw_content)
-                parsed_data = list(map(lambda x: _add_meta(x, symbol, type, interval), parsed_data))
-                all_data.extend(parsed_data)
-            group = pd.DataFrame(all_data)
-            group = group.sort_values(by=["symbol", "type", "interval"])
-            group = group.drop_duplicates(subset=["symbol", "type", "interval", "open_timestamp"])
-            # Create a complete date range
-            start_time = group["open_timestamp"].min()
-            end_time = group["open_timestamp"].max()
-            complete_range = pd.date_range(
-                start=start_time, end=end_time, freq=INTERVAL_TO_TIMEDELT[interval]
-            )
-
-            # Reindex the group with the complete range and forward fill
-            filled_group = group.set_index("open_timestamp").reindex(complete_range)
-            # Mark missing data
-            filled_group["missing"] = filled_group["missing"].isna()
-
-            # Forward fill
-            filled_group = filled_group.ffill()
-
-            # Reset index and add back the metadata columns
-            filled_group = filled_group.reset_index()
-            filled_group["open_timestamp"] = filled_group["index"]
-            filled_group["symbol"] = symbol
-            filled_group["type"] = type
-            filled_group["interval"] = interval
-            return filled_group
-
         futures = []
         all_df_data = []
         for (symbol, type_str, interval), group_zip_files in zip_files_grouped.items():
             futures.append(workers.submit(_worker, group_zip_files, symbol, type_str, interval))
 
-        for future in as_completed(futures):
+        for future in tqdm(
+            as_completed(futures), total=len(futures), desc="Processing grouped ZIP files"
+        ):
             parsed_data = future.result()
             all_df_data.append(parsed_data)
 
@@ -330,6 +324,7 @@ def upload_to_huggingface(dataset: Dataset, repo_name: str, type_str: str, inter
     #         lambda x: x["type"] == type_str and x["interval"] == interval
     #     )
     #     # Push the dataset to the Hugging Face Hub
+    dataset = dataset.remove_columns(["__index_level_0__"])
     dataset.push_to_hub(
         repo_name, split=f"{type_str}.{interval}", token="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"
     )
@@ -346,8 +341,8 @@ def main(root_dir: str, repo_name: str, type_str, interval, symbols=[]):
     zip_files = get_zip_files(root_dir)
     if symbols:
         zip_files = [f for f in zip_files if any(symbol in f for symbol in symbols)]
-    _type_str = type_str.lower() + "/"
-    _interval_str = interval.lower() + "/"
+    _type_str = "/" + type_str.lower() + "/"
+    _interval_str = "/" + interval.lower() + "/"
     zip_files = [f for f in zip_files if _type_str in f and _interval_str in f]
     if len(zip_files) == 0:
         print("No ZIP files found")
@@ -370,11 +365,11 @@ if __name__ == "__main__":
     # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='spot', interval='1h')
     # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='spot', interval='30m')
     # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str='spot', interval='15m')
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="spot", interval="5m")
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="spot", interval="1m")
+    # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="spot", interval="5m")
+    # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="spot", interval="1m")
 
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="1h")
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="30m")
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="15m")
-    main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="5m")
+    # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="1h")
+    # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="30m")
+    # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="15m")
+    # main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="5m")
     main(os.path.expanduser("~/binance_data/data"), repo_name, type_str="um", interval="1m")

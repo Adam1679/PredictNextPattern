@@ -1,0 +1,8 @@
+requests
+torch==2.3.1
+numpy==1.26.4 
+transformers==4.42.4
+datasets
+tiktoken 
+wandb 
+tqdm
