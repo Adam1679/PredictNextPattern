@@ -35,3 +35,4 @@ env/
 
 # Ignore any local configuration files
 config.ini
+*.dat

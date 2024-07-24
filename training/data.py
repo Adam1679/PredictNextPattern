@@ -1,13 +1,14 @@
+import json
 import os
 import random
 from datetime import datetime
 
 import torch
 from datasets import load_dataset
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 
-class OHLCDataset(Dataset):
+class OHLCDatasetHF(Dataset):
     def __init__(
         self,
         dataset_name,
@@ -50,6 +51,7 @@ class OHLCDataset(Dataset):
         return len(self.all_dataset)
 
     def __getitem__(self, start_idx):
+        raise NotImplementedError("This method should be implemented in the derived class")
         # Randomly get a window size
         if self.window:
             window = self.window
@@ -103,24 +105,71 @@ class OHLCDataset(Dataset):
         }
 
 
+class OHLCDatasetMmap:
+    def __init__(
+        self,
+        data_root,
+        window=None,
+        window_range=(30, 4096),
+        max_date=None,
+        min_date=None,
+        random_seed=42,
+        is_train=True,
+    ):
+        worker_info = torch.utils.data.get_worker_info()
+        self.num_workers = worker_info.num_workers if worker_info is not None else 1
+        self.num_proc = max(1, os.cpu_count() - 4)
+        self.worker_id = worker_info.id if worker_info is not None else 0
+        self.window_range = window_range
+        self.window = window
+        self.is_train = is_train
+        self.data_root = os.path.join(data_root, "train" if is_train else "test")
+        with open(os.path.join(data_root, "metadata.json"), "r") as f:
+            metadata = json.load(f)
+            self.columns = metadata["columns"]
+            if is_train:
+                split = "train"
+            else:
+                split = "test"
+            self.split_file_metas = {
+                k: v for k, v in metadata["splits"].items() if k.endswith(split)
+            }
+
+        assert not (
+            max_date is not None and min_date is not None
+        ), "Either max_date or min_date should be None"
+        assert not (
+            window is not None and window_range is not None
+        ), "Either window or window_range should be None"
+
+    def __len__(self):
+        cnt = 0
+        for meta in self.split_file_metas.values():
+            cnt += meta["shape"][0]
+        return cnt
+
+    def __getitem__(self, idx):
+        pass
+
+
 if __name__ == "__main__":
-    dataset = OHLCDataset(
+    dataset = OHLCDatasetHF(
         "adamzzzz/binance-klines-20240721",
         window_range=(16, 48),
         max_date="2024-01-01",
         split="spot.1h",
     )
-    print(len(dataset[0]))
-    print(dataset[10])
-    print("#" * 100)
-    print(dataset[100])
-    print("#" * 100)
-    print(dataset[10000])
-    print("#" * 100)
-    print(dataset[100000])
-    # dataloader = DataLoader(dataset, batch_size=4, num_workers=0)
-    # for i, data in enumerate(dataloader):
-
-    #     print(data)
-    #     if i > 5:
-    #         break
+    # print(len(dataset[0]))
+    # print(dataset[10])
+    # print("#" * 100)
+    # print(dataset[100])
+    # print("#" * 100)
+    # print(dataset[10000])
+    # print("#" * 100)
+    # print(dataset[100000])
+    dataloader = DataLoader(dataset, batch_size=4, num_workers=0)
+    for i, data in enumerate(dataloader):
+        # print(data)
+        print(i)
+        if i > 5:
+            break
