@@ -1,8 +1,10 @@
 import json
 import os
 import random
+from bisect import bisect_right
 from datetime import datetime
 
+import numpy as np
 import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
@@ -111,10 +113,11 @@ class OHLCDatasetMmap:
         data_root,
         window=None,
         window_range=(30, 4096),
-        max_date=None,
-        min_date=None,
         random_seed=42,
         is_train=True,
+        filter_symbols=None,
+        filter_types=None,
+        filter_intervals=None,
     ):
         worker_info = torch.utils.data.get_worker_info()
         self.num_workers = worker_info.num_workers if worker_info is not None else 1
@@ -124,6 +127,7 @@ class OHLCDatasetMmap:
         self.window = window
         self.is_train = is_train
         self.data_root = os.path.join(data_root, "train" if is_train else "test")
+        self.rng = random.Random(random_seed + self.worker_id)
         with open(os.path.join(data_root, "metadata.json"), "r") as f:
             metadata = json.load(f)
             self.columns = metadata["columns"]
@@ -131,34 +135,70 @@ class OHLCDatasetMmap:
                 split = "train"
             else:
                 split = "test"
-            self.split_file_metas = {
-                k: v for k, v in metadata["splits"].items() if k.endswith(split)
-            }
+            self.split_file_metas = [
+                (k, v) for k, v in metadata["splits"].items() if k.endswith(split)
+            ]
+            self.split_file_metas.sort(key=lambda x: x[0])
+            if filter_symbols:
+                self.split_file_metas = [
+                    (k, v) for k, v in self.split_file_metas if k.split("_")[1] in filter_symbols
+                ]
+            if filter_types:
+                self.split_file_metas = [
+                    (k, v) for k, v in self.split_file_metas if k.split("_")[2] in filter_types
+                ]
+            if filter_intervals:
+                self.split_file_metas = [
+                    (k, v) for k, v in self.split_file_metas if k.split("_")[3] in filter_intervals
+                ]
+            self.prefix_sum = [0]
+            for _, meta in self.split_file_metas:
+                self.prefix_sum.append(self.prefix_sum[-1] + meta["shape"][0])
 
-        assert not (
-            max_date is not None and min_date is not None
-        ), "Either max_date or min_date should be None"
         assert not (
             window is not None and window_range is not None
         ), "Either window or window_range should be None"
 
     def __len__(self):
         cnt = 0
-        for meta in self.split_file_metas.values():
+        for _, meta in self.split_file_metas:
             cnt += meta["shape"][0]
         return cnt
 
-    def __getitem__(self, idx):
-        pass
+    def __getitem__(self, index):
+        bin_idx = bisect_right(self.prefix_sum, index) - 1
+        offset = index - self.prefix_sum[bin_idx]
+        split_name, meta = self.split_file_metas[bin_idx]
+        _, symbol, type_str, interval, _ = split_name.split("_")
+        filename = os.path.join(self.data_root, meta["filename"])
+        max_time_len = meta["shape"][0]
+        arr = np.memmap(filename, dtype=np.float32, mode="r", shape=tuple(meta["shape"]))
+        start = offset
+        if self.window:
+            window = self.window
+        else:
+            window = self.rng.randint(*self.window_range)
+        end = min(offset + window, max_time_len)
+        ohlc = torch.zeros((4, window), dtype=torch.float32)
+        volume = torch.zeros(window, dtype=torch.float32)
+        ohlc[0, start:end] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
+        ohlc[1, start:end] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
+        ohlc[2, start:end] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
+        ohlc[3, start:end] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
+        volume[start:end] = torch.tensor(arr[start:end, 4], dtype=torch.float32)
+        return {
+            "symbol": symbol,
+            "type": type_str,
+            "interval": interval,
+            "ohlc": ohlc,
+            "volume": volume,
+        }
 
 
 if __name__ == "__main__":
-    dataset = OHLCDatasetHF(
-        "adamzzzz/binance-klines-20240721",
-        window_range=(16, 48),
-        max_date="2024-01-01",
-        split="spot.1h",
-    )
+    # dataset = OHLCDatasetMmap('memmap_dataset', window_range=(16, 48), is_train=True)
+    dataset = OHLCDatasetMmap("memmap_dataset", window=2048, window_range=None, is_train=True)
+    # print(len(dataset))
     # print(len(dataset[0]))
     # print(dataset[10])
     # print("#" * 100)
