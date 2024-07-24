@@ -179,25 +179,72 @@ class OHLCDatasetMmap:
         else:
             window = self.rng.randint(*self.window_range)
         end = min(offset + window, max_time_len)
-        ohlc = torch.zeros((4, window), dtype=torch.float32)
-        volume = torch.zeros(window, dtype=torch.float32)
-        ohlc[0, start:end] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
-        ohlc[1, start:end] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
-        ohlc[2, start:end] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
-        ohlc[3, start:end] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
-        volume[start:end] = torch.tensor(arr[start:end, 4], dtype=torch.float32)
+        actual_length = end - start
+
+        ohlcv = torch.zeros((5, actual_length), dtype=torch.float32)
+        ohlcv[0, :actual_length] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
+        ohlcv[1, :actual_length] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
+        ohlcv[2, :actual_length] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
+        ohlcv[3, :actual_length] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
+        ohlcv[4, :actual_length] = torch.tensor(arr[start:end, 4], dtype=torch.float32)
         return {
             "symbol": symbol,
             "type": type_str,
             "interval": interval,
-            "ohlc": ohlc,
-            "volume": volume,
+            "ohlcv": ohlcv,
         }
+
+    def collate_fn(self, batch, pad_value=0):
+        target_length = self.window or self.window_range[1]
+
+        # Separate inputs and targets
+        inputs = [item["ohlcv"] for item in batch]
+
+        # Get the maximum sequence length in the batch
+        max_len = max(seq.size(1) for seq in inputs)
+
+        # If target_length is provided and is greater than max_len, use target_length
+        if target_length is not None:
+            max_len = max(max_len, target_length)
+
+        # Pad sequences to max_len
+        padded_inputs = []
+        for seq in inputs:
+            if seq.size(1) < max_len:
+                padding = torch.full(
+                    (seq.size(0), max_len - seq.size(1)),
+                    pad_value,
+                    dtype=seq.dtype,
+                    device=seq.device,
+                )
+                padded_seq = torch.cat([seq, padding], dim=1)
+            else:
+                padded_seq = seq[:, :max_len]
+            padded_inputs.append(padded_seq)
+
+        # Stack the padded sequences
+        stacked_inputs = torch.stack(padded_inputs)
+
+        # If the stacked inputs are shorter than target_length, pad further
+        if target_length is not None and stacked_inputs.size(1) < target_length:
+            padding = torch.full(
+                (
+                    stacked_inputs.size(0),
+                    stacked_inputs.size(1),
+                    target_length - stacked_inputs.size(2),
+                ),
+                pad_value,
+                dtype=stacked_inputs.dtype,
+                device=stacked_inputs.device,
+            )
+            stacked_inputs = torch.cat([stacked_inputs, padding], dim=2)
+
+        return stacked_inputs
 
 
 if __name__ == "__main__":
-    # dataset = OHLCDatasetMmap('memmap_dataset', window_range=(16, 48), is_train=True)
-    dataset = OHLCDatasetMmap("memmap_dataset", window=2048, window_range=None, is_train=True)
+    dataset = OHLCDatasetMmap("memmap_dataset", window_range=(16, 48), is_train=True)
+    # dataset = OHLCDatasetMmap("memmap_dataset", window=2048, window_range=None, is_train=True)
     # print(len(dataset))
     # print(len(dataset[0]))
     # print(dataset[10])
@@ -207,7 +254,7 @@ if __name__ == "__main__":
     # print(dataset[10000])
     # print("#" * 100)
     # print(dataset[100000])
-    dataloader = DataLoader(dataset, batch_size=4, num_workers=0)
+    dataloader = DataLoader(dataset, batch_size=4, num_workers=0, collate_fn=dataset.collate_fn)
     for i, data in enumerate(dataloader):
         # print(data)
         print(i)
