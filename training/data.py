@@ -195,17 +195,11 @@ class OHLCDatasetMmap:
         }
 
     def collate_fn(self, batch, pad_value=0):
-        target_length = self.window or self.window_range[1]
-
         # Separate inputs and targets
         inputs = [item["ohlcv"] for item in batch]
 
         # Get the maximum sequence length in the batch
         max_len = max(seq.size(1) for seq in inputs)
-
-        # If target_length is provided and is greater than max_len, use target_length
-        if target_length is not None:
-            max_len = max(max_len, target_length)
 
         # Pad sequences to max_len
         padded_inputs = []
@@ -224,39 +218,14 @@ class OHLCDatasetMmap:
 
         # Stack the padded sequences
         stacked_inputs = torch.stack(padded_inputs)
-
-        # If the stacked inputs are shorter than target_length, pad further
-        if target_length is not None and stacked_inputs.size(1) < target_length:
-            padding = torch.full(
-                (
-                    stacked_inputs.size(0),
-                    stacked_inputs.size(1),
-                    target_length - stacked_inputs.size(2),
-                ),
-                pad_value,
-                dtype=stacked_inputs.dtype,
-                device=stacked_inputs.device,
-            )
-            stacked_inputs = torch.cat([stacked_inputs, padding], dim=2)
-
         return stacked_inputs
 
 
 if __name__ == "__main__":
-    dataset = OHLCDatasetMmap("memmap_dataset", window_range=(16, 48), is_train=True)
-    # dataset = OHLCDatasetMmap("memmap_dataset", window=2048, window_range=None, is_train=True)
-    # print(len(dataset))
-    # print(len(dataset[0]))
-    # print(dataset[10])
-    # print("#" * 100)
-    # print(dataset[100])
-    # print("#" * 100)
-    # print(dataset[10000])
-    # print("#" * 100)
-    # print(dataset[100000])
-    dataloader = DataLoader(dataset, batch_size=4, num_workers=0, collate_fn=dataset.collate_fn)
+    dataset = OHLCDatasetMmap("memmap_dataset", window_range=(1600, 4096), is_train=True)
+    # sampler = RandomSampler(dataset)
+    dataloader = DataLoader(dataset, batch_size=1, num_workers=0, collate_fn=dataset.collate_fn)
     for i, data in enumerate(dataloader):
-        # print(data)
-        print(i)
-        if i > 5:
+        print(data.shape)
+        if i > 500:
             break
