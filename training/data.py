@@ -1,113 +1,28 @@
 import json
+import math
 import os
 import random
+import time
 from bisect import bisect_right
-from datetime import datetime
 
 import numpy as np
 import torch
-from datasets import load_dataset
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, IterableDataset
 
 
-class OHLCDatasetHF(Dataset):
-    def __init__(
-        self,
-        dataset_name,
-        window=None,
-        window_range=(30, 4096),
-        max_date=None,
-        min_date=None,
-        random_seed=42,
-        split="spot.1m",
-    ):
-        worker_info = torch.utils.data.get_worker_info()
-        self.num_workers = worker_info.num_workers if worker_info is not None else 1
-        self.num_proc = max(1, os.cpu_count() - 4)
-        self.worker_id = worker_info.id if worker_info is not None else 0
-        self.window_range = window_range
-        self.window = window
-        self.all_dataset = load_dataset(dataset_name, num_proc=self.num_proc, split=split).shard(
-            num_shards=self.num_workers, index=self.worker_id, contiguous=True
-        )
-        assert not (
-            max_date is not None and min_date is not None
-        ), "Either max_date or min_date should be None"
-        assert not (
-            window is not None and window_range is not None
-        ), "Either window or window_range should be None"
-        if max_date is not None:
-            train_split_timestamp_ns = datetime.strptime(max_date, "%Y-%m-%d")
-            self.all_dataset = self.all_dataset.filter(
-                lambda x: x["open_timestamp"] <= train_split_timestamp_ns, num_proc=self.num_proc
-            )
-        if min_date is not None:
-            train_split_timestamp_ns = datetime.strptime(min_date, "%Y-%m-%d")
-            self.all_dataset = self.all_dataset.filter(
-                lambda x: x["open_timestamp"] >= train_split_timestamp_ns, num_proc=self.num_proc
-            )
+class Timer:
+    def __init__(self, msg):
+        self.msg = msg
 
-        self.rng = random.Random(random_seed + self.worker_id)
+    def __enter__(self):
+        self.t = time.time()
+        return self
 
-    def __len__(self):
-        return len(self.all_dataset)
-
-    def __getitem__(self, start_idx):
-        raise NotImplementedError("This method should be implemented in the derived class")
-        # Randomly get a window size
-        if self.window:
-            window = self.window
-        else:
-            window = self.rng.randint(*self.window_range)
-        # Get data for the selected ticker
-        range_data = self.all_dataset[start_idx : start_idx + window]
-        symbol, type_str, interval = (
-            range_data["symbol"][0],
-            range_data["type"][0],
-            range_data["interval"][0],
-        )
-        data = {
-            "symbol": [],
-            "type": [],
-            "interval": [],
-            "open_price": [],
-            "high_price": [],
-            "low_price": [],
-            "close_price": [],
-            "open_timestamp": [],
-        }
-        for i in range(len(range_data)):
-            if (
-                range_data["type"][i] == type_str
-                and range_data["interval"][i] == interval
-                and range_data["symbol"][i] == symbol
-            ):
-                for key in data.keys():
-                    data[key].append(range_data[key][i])
-            else:
-                break
-        open_t = str(data["open_timestamp"][0])
-        close_t = str(data["open_timestamp"][-1])
-        # Extract prices and convert to tensor
-        o = torch.tensor(data["open_price"], dtype=torch.float32)
-        h = torch.tensor(data["high_price"], dtype=torch.float32)
-        lo = torch.tensor(data["low_price"], dtype=torch.float32)
-        c = torch.tensor(data["close_price"], dtype=torch.float32)
-
-        return {
-            "symbol": symbol,
-            "type": type_str,
-            "interval": interval,
-            "open_price": o,
-            "high_price": h,
-            "low_price": lo,
-            "close_price": c,
-            "window_start": open_t,
-            "window_end": close_t,
-        }
+    def __exit__(self, type, value, traceback):
+        print(f"{self.msg}: {time.time() - self.t:.2f} seconds")
 
 
-class OHLCDatasetMmap:
+class OHLCDatasetMmap(IterableDataset):
     def __init__(
         self,
         data_root,
@@ -118,16 +33,19 @@ class OHLCDatasetMmap:
         filter_symbols=None,
         filter_types=None,
         filter_intervals=None,
+        first_n=float("inf"),
     ):
-        worker_info = torch.utils.data.get_worker_info()
-        self.num_workers = worker_info.num_workers if worker_info is not None else 1
-        self.num_proc = max(1, os.cpu_count() - 4)
-        self.worker_id = worker_info.id if worker_info is not None else 0
         self.window_range = window_range
         self.window = window
         self.is_train = is_train
         self.data_root = os.path.join(data_root, "train" if is_train else "test")
-        self.rng = random.Random(random_seed + self.worker_id)
+        self.first_n = first_n
+        self.random_seed = random_seed
+        self.rng = random.Random(random_seed)
+
+        if not os.path.exists(os.path.join(data_root, "metadata.json")):
+            raise ValueError("metadata.json not found in {}".format(data_root))
+
         with open(os.path.join(data_root, "metadata.json"), "r") as f:
             metadata = json.load(f)
             self.columns = metadata["columns"]
@@ -153,17 +71,31 @@ class OHLCDatasetMmap:
                 ]
             self.prefix_sum = [0]
             for _, meta in self.split_file_metas:
-                self.prefix_sum.append(self.prefix_sum[-1] + meta["shape"][0])
-
+                size = min(meta["shape"][0], self.first_n)
+                self.prefix_sum.append(self.prefix_sum[-1] + size)
         assert not (
             window is not None and window_range is not None
         ), "Either window or window_range should be None"
+        self.total_size = self.prefix_sum[-1]
 
     def __len__(self):
-        cnt = 0
-        for _, meta in self.split_file_metas:
-            cnt += meta["shape"][0]
-        return cnt
+        return self.total_size
+
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        num_workers = worker_info.num_workers if worker_info is not None else 1
+        worker_id = worker_info.id if worker_info is not None else 0
+        rng = random.Random(self.random_seed + worker_id)
+        i = 0
+        per_worker = int(math.ceil(self.total_size / float(num_workers)))
+        print(f"Worker {worker_id} will process {per_worker} samples")
+        start = worker_id * per_worker
+        end = min(start + per_worker, self.total_size)
+
+        while i < per_worker:
+            randint = rng.randint(start, end)
+            i += 1
+            yield self.__getitem__(randint)
 
     def __getitem__(self, index):
         bin_idx = bisect_right(self.prefix_sum, index) - 1
@@ -171,7 +103,7 @@ class OHLCDatasetMmap:
         split_name, meta = self.split_file_metas[bin_idx]
         _, symbol, type_str, interval, _ = split_name.split("_")
         filename = os.path.join(self.data_root, meta["filename"])
-        max_time_len = meta["shape"][0]
+        max_time_len = min(meta["shape"][0], self.first_n)
         arr = np.memmap(filename, dtype=np.float32, mode="r", shape=tuple(meta["shape"]))
         start = offset
         if self.window:
@@ -191,12 +123,14 @@ class OHLCDatasetMmap:
             "symbol": symbol,
             "type": type_str,
             "interval": interval,
-            "ohlcv": ohlcv,
+            "inputs": ohlcv,
+            "bar_start": start,
+            "bar_end": end,
         }
 
     def collate_fn(self, batch, pad_value=0):
         # Separate inputs and targets
-        inputs = [item["ohlcv"] for item in batch]
+        inputs = [item["inputs"] for item in batch]
 
         # Get the maximum sequence length in the batch
         max_len = max(seq.size(1) for seq in inputs)
@@ -218,14 +152,19 @@ class OHLCDatasetMmap:
 
         # Stack the padded sequences
         stacked_inputs = torch.stack(padded_inputs)
-        return stacked_inputs
+        batched_inputs = {
+            "symbol": [item["symbol"] for item in batch],
+            "type": [item["type"] for item in batch],
+            "interval": [item["interval"] for item in batch],
+            "inputs": stacked_inputs,
+        }
+        return batched_inputs
 
 
 if __name__ == "__main__":
     dataset = OHLCDatasetMmap("memmap_dataset", window_range=(1600, 4096), is_train=True)
-    # sampler = RandomSampler(dataset)
-    dataloader = DataLoader(dataset, batch_size=1, num_workers=0, collate_fn=dataset.collate_fn)
+    dataloader = DataLoader(dataset, batch_size=16, num_workers=16, collate_fn=dataset.collate_fn)
     for i, data in enumerate(dataloader):
-        print(data.shape)
+        print(i)
         if i > 500:
             break

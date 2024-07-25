@@ -1,0 +1,52 @@
+data:
+
+model:
+
+validation:
+  interval: 100
+  first_n: 10000
+  # metrics:
+  #   - mse
+  #   - mae
+
+  filter_symbols: null
+  filter_intervals: 0.0
+
+test:
+  # metrics:
+  #   - mse
+  #   - mae
+
+  filter_symbols: null
+  filter_intervals: 0.0
+
+
+optimizer:
+  name:  Adam
+  lr: 0.001
+  weight_decay: 0.0
+  batch_size: &bsz 32
+  num_epochs: 10
+  learning_rate: 5e-5
+  warmup_steps: 100
+
+checkpointing:
+  dir: checkpoints
+  interval: 1000
+  keep_n_checkpoints: 1
+
+distributed:
+  train_batch_size: *bsz,
+  fp16:
+    enabled: True
+  zero_optimization:
+    stage: 2
+    offload_optimizer:
+      device: cpu
+      pin_memory: True
+  scheduler:
+    type": WarmupLR
+    params":
+      warmup_min_lr: 0
+      warmup_max_lr: learning_rate
+      warmup_num_steps: warmup_steps
