@@ -7,7 +7,6 @@ import deepspeed
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-import wandb
 import yaml
 from data import OHLCDatasetMmap, Timer
 from deepspeed import DeepSpeedEngine
@@ -15,6 +14,8 @@ from model import CryptoLlama, CryptoLlamaModel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
+
+import wandb
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -73,11 +74,12 @@ def train(
     sum_loss = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     sum_global_norm = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     total_tokens = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
+    model_dtype = next(model.parameters()).dtype
     for batch in train_dataloader:
         t0 = time.time()
 
-        inputs = batch["inputs"] = batch["inputs"].to(
-            model.device
+        inputs = batch["inputs"] = (
+            batch["inputs"].to(model.device).to(model_dtype)
         )  # (batch_size, seq_len, input_size)
         attention_mask = batch["attention_mask"] = batch["attention_mask"].to(
             model.device
@@ -109,10 +111,11 @@ def train(
         sum_loss.add_(loss.detach().data)
         sum_global_norm.add_(global_norm.detach().data)
         stats = {}
-        if (num_steps + 1) % all_in_one_config["validation"]["interval"] == 0:
+        val_interval = all_in_one_config["validation"]["interval"]
+        if val_interval > 0 and (num_steps + 1) % val_interval == 0:
             val_metrics = validate(model, val_dataloader, all_in_one_config["validation"])
             stats.update(val_metrics)
-
+        eta = (max_steps - num_steps) * dt
         if (num_steps + 1) % all_in_one_config["logging"]["log_interval"] == 0:
             dist.all_reduce(sum_loss, op=dist.ReduceOp.AVG)
             dist.all_reduce(sum_global_norm, op=dist.ReduceOp.AVG)
@@ -125,6 +128,7 @@ def train(
                 "lr": optimizer.param_groups[0]["lr"],
                 "train/time_per_step": round(dt, 4),
                 "train/tokens_per_step": int(tokens_per_step / dt),
+                "eta/hour": round(eta / 3600, 2),
             }
             data_stats = input_output_distribution(batch, outputs)
             stats.update(data_stats)
@@ -132,7 +136,7 @@ def train(
             total_tokens.zero_()
             sum_loss.zero_()
             sum_global_norm.zero_()
-            if all_in_one_config["logging"]["wandb_enabled"]:
+            if all_in_one_config["logging"]["wandb_enabled"] and RANK == 0:
                 wandb.log(stats, step=num_steps)
 
         num_steps += 1
@@ -145,11 +149,12 @@ def train(
 def validate(model, dataloader, validation_config):
     model.eval()
     total_loss = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
+    model_dtype = next(model.parameters()).dtype
     with torch.no_grad():
         val_step = 0
         for batch in tqdm(dataloader, desc="Validating"):
-            inputs = batch["inputs"] = batch["inputs"].to(
-                model.device
+            inputs = batch["inputs"] = (
+                batch["inputs"].to(model.device).to(model_dtype)
             )  # (batch_size, seq_len, input_size)
             attention_mask = batch["attention_mask"] = batch["attention_mask"].to(
                 model.device
@@ -169,6 +174,7 @@ def validate(model, dataloader, validation_config):
             s_loss = nn.MSELoss()(masked_predictions, masked_targets)
             total_loss.add_(s_loss)
             val_step += 1
+            del batch
     dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
     model.train()
     return {"val/loss": total_loss.item() / val_step}
@@ -252,7 +258,7 @@ def main():
     )
 
     # Initialize wandb if needed
-    if all_in_one_config["logging"]["wandb_enabled"]:
+    if all_in_one_config["logging"]["wandb_enabled"] and RANK == 0:
         wandb.init(
             project=all_in_one_config["logging"]["wandb_project"],
             config=all_in_one_config,

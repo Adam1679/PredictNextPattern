@@ -28,7 +28,7 @@ model:
  mlp_bias: False
 
 validation: 
- interval: 100
+ interval: -1
  first_n: 10000
  batch_size: 16
  # metrics: 
@@ -47,15 +47,14 @@ test:
  filter_intervals: 0.0
 
 logging: 
- log_interval: 1
- wandb_enabled: False
- wandb_project: null
- wandb_entity: null
- wandb_run_name: null
+ log_interval: 10
+ wandb_enabled: True
+ wandb_project: cpt
+ wandb_run_name: 'test_run'
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 
- batch_size: &bsz 16
+ batch_size: &bsz 32
  total_steps: &steps 10000
  lr: 0.001
  weight_decay: 0.01
@@ -72,7 +71,7 @@ distributed:
  fp16: 
   enabled: False
  bf16: 
-  enabled: False
+  enabled: True
 
  zero_optimization: 
   stage: 0
