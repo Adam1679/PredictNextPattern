@@ -26,7 +26,6 @@ class OHLCDatasetMmap(IterableDataset):
     def __init__(
         self,
         data_root,
-        window=None,
         window_range=(30, 4096),
         random_seed=42,
         is_train=True,
@@ -36,7 +35,7 @@ class OHLCDatasetMmap(IterableDataset):
         first_n=float("inf"),
     ):
         self.window_range = window_range
-        self.window = window
+        self.window = window_range[0] if window_range[0] == window_range[1] else None
         self.is_train = is_train
         self.data_root = os.path.join(data_root, "train" if is_train else "test")
         self.first_n = first_n
@@ -73,9 +72,7 @@ class OHLCDatasetMmap(IterableDataset):
             for _, meta in self.split_file_metas:
                 size = min(meta["shape"][0], self.first_n)
                 self.prefix_sum.append(self.prefix_sum[-1] + size)
-        assert not (
-            window is not None and window_range is not None
-        ), "Either window or window_range should be None"
+
         self.total_size = self.prefix_sum[-1]
 
     def __len__(self):
@@ -113,12 +110,12 @@ class OHLCDatasetMmap(IterableDataset):
         end = min(offset + window, max_time_len)
         actual_length = end - start
 
-        ohlcv = torch.zeros((5, actual_length), dtype=torch.float32)
-        ohlcv[0, :actual_length] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
-        ohlcv[1, :actual_length] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
-        ohlcv[2, :actual_length] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
-        ohlcv[3, :actual_length] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
-        ohlcv[4, :actual_length] = torch.tensor(arr[start:end, 4], dtype=torch.float32)
+        ohlcv = torch.zeros((actual_length, 5), dtype=torch.float32)
+        ohlcv[:actual_length, 0] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
+        ohlcv[:actual_length, 1] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
+        ohlcv[:actual_length, 2] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
+        ohlcv[:actual_length, 3] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
+        ohlcv[:actual_length, 4] = torch.tensor(arr[start:end, 4], dtype=torch.float32)
         return {
             "symbol": symbol,
             "type": type_str,
@@ -133,21 +130,22 @@ class OHLCDatasetMmap(IterableDataset):
         inputs = [item["inputs"] for item in batch]
 
         # Get the maximum sequence length in the batch
-        max_len = max(seq.size(1) for seq in inputs)
+        max_len = max(seq.size(0) for seq in inputs)
 
         # Pad sequences to max_len
         padded_inputs = []
         for seq in inputs:
-            if seq.size(1) < max_len:
+            # seq: (seq_len, 5)
+            if seq.size(0) < max_len:
                 padding = torch.full(
-                    (seq.size(0), max_len - seq.size(1)),
+                    (max_len - seq.size(0), seq.size(1)),
                     pad_value,
                     dtype=seq.dtype,
                     device=seq.device,
                 )
-                padded_seq = torch.cat([seq, padding], dim=1)
+                padded_seq = torch.cat([seq, padding], dim=0)
             else:
-                padded_seq = seq[:, :max_len]
+                padded_seq = seq[:max_len, :]
             padded_inputs.append(padded_seq)
 
         # Stack the padded sequences
@@ -165,6 +163,6 @@ if __name__ == "__main__":
     dataset = OHLCDatasetMmap("memmap_dataset", window_range=(1600, 4096), is_train=True)
     dataloader = DataLoader(dataset, batch_size=16, num_workers=16, collate_fn=dataset.collate_fn)
     for i, data in enumerate(dataloader):
-        print(i)
+        print(data["inputs"].shape)
         if i > 500:
             break

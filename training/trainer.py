@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from functools import partial
 
@@ -8,15 +9,28 @@ import torch.nn as nn
 import wandb
 import yaml
 from data import OHLCDatasetMmap, Timer
-from model import CryptoLlamaModel
+from model import CryptoLlama, CryptoLlamaModel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
-from transformers.models.llama.modeling_llama import LlamaConfig
 
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.StreamHandler())
 
 deepspeed.init_distributed(dist_backend="nccl")
+RANK = int(os.environ.get("RANK", 0))
+
+
+def print_rank(msg):
+    logger.info(f"[Rank {RANK}] {msg}")
+
+
+def print_master(msg):
+    if RANK == 0:
+        logger.info(f"[Master] {msg}")
 
 
 def train(
@@ -35,7 +49,9 @@ def train(
     for batch in train_dataloader:
         t0 = time.time()
         inputs = batch["inputs"].to(model.device)
-        outputs = model(inputs)
+        # attention_mask = (inputs != 0).float()
+        attention_mask = None
+        outputs = model(inputs=inputs, attention_mask=attention_mask)
 
         # Assume the target is the last value in each sequence
         targets = inputs[:, -1, -1]
@@ -95,9 +111,15 @@ def main():
         learning_rate = all_in_one_config["optimizer"]["lr"]
         weight_decay = all_in_one_config["optimizer"]["weight_decay"]
         warmup_steps = all_in_one_config["optimizer"]["warmup_steps"]
+        seq_len = all_in_one_config["data"]["max_seq_len"]
+        min_seq_len = all_in_one_config["data"]["min_seq_len"]
 
         # Create datasets and dataloaders
-        dataset = OHLCDatasetMmap("memmap_dataset", window_range=(1600, 4096), is_train=True)
+        dataset = OHLCDatasetMmap(
+            all_in_one_config["data"]["data_dir"],
+            window_range=(min_seq_len, seq_len),
+            is_train=True,
+        )
         valset = OHLCDatasetMmap(
             "memmap_dataset",
             window_range=(1600, 4096),
@@ -115,10 +137,10 @@ def main():
         )
 
         # Initialize the model
-        model_config = LlamaConfig(**all_in_one_config["model"])
+        model_config = CryptoLlama(**all_in_one_config["model"])
     with Timer("Initialize Model"):
         model = CryptoLlamaModel(model_config)
-
+        print_master(f"Number of parameters: {model.num_parameters():,}")
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
