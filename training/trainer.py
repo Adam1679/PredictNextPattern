@@ -1,18 +1,22 @@
 import logging
 import time
+from functools import partial
 
 import deepspeed
 import torch
 import torch.nn as nn
-import tqdm
 import wandb
-from data import OHLCDatasetMmap
+import yaml
+from data import OHLCDatasetMmap, Timer
 from model import CryptoLlamaModel
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 from transformers.models.llama.modeling_llama import LlamaConfig
 
 logger = logging.getLogger(__name__)
+
+deepspeed.init_distributed(dist_backend="nccl")
 
 
 def train(
@@ -27,10 +31,10 @@ def train(
 ):
     model.train()
     num_steps = 0
-    all_in_one_config.checkpoint.interval
+
     for batch in train_dataloader:
         t0 = time.time()
-        inputs = batch["inputs"]
+        inputs = batch["inputs"].to(model.device)
         outputs = model(inputs)
 
         # Assume the target is the last value in each sequence
@@ -51,8 +55,8 @@ def train(
             "lr": optimizer.param_groups[0]["lr"],
             "train/time_per_step": dt,
         }
-        if (num_steps + 1) % all_in_one_config.validation.interval == 0:
-            val_metrics = validate(model, val_dataloader, all_in_one_config.validation)
+        if (num_steps + 1) % all_in_one_config["validation"]["interval"] == 0:
+            val_metrics = validate(model, val_dataloader, all_in_one_config["validation"])
             stats.update(val_metrics)
         if wandb_log:
             wandb.log(stats, step=num_steps)
@@ -73,70 +77,70 @@ def validate(model, dataloader, validation_config):
             loss = nn.MSELoss()(predictions, targets)
             total_loss += loss.item()
     model.train()
-    return total_loss / len(dataloader)
+    return {"val/loss": total_loss / len(dataloader)}
 
 
-# load yaml config
 def load_config(config_path):
-    import yaml
-
     with open(config_path, "r") as stream:
-        try:
-            return yaml.safe_load(stream)
-        except yaml.YAMLError as exc:
-            print(exc)
-            return None
+        return yaml.safe_load(stream)
 
 
 def main():
-    all_in_one_config = load_config("config.yaml")
-    # Hyperparameters
-    batch_size = all_in_one_config.optimizer.batch_size
-    total_steps = all_in_one_config.optimizer.total_steps
-    learning_rate = all_in_one_config.optimizer.learning_rate
-    warmup_steps = all_in_one_config.optimizer.warmup_steps
+    with Timer("Loading config & Initialize Data"):
+        all_in_one_config = load_config("training/config.yaml")
 
-    # Create a sample dataset and dataloader
+        # Hyperparameters
+        batch_size = all_in_one_config["optimizer"]["batch_size"]
+        total_steps = all_in_one_config["optimizer"]["total_steps"]
+        learning_rate = all_in_one_config["optimizer"]["lr"]
+        weight_decay = all_in_one_config["optimizer"]["weight_decay"]
+        warmup_steps = all_in_one_config["optimizer"]["warmup_steps"]
 
-    dataset = OHLCDatasetMmap("memmap_dataset", window_range=(1600, 4096), is_train=True)
-    valset = OHLCDatasetMmap(
-        "memmap_dataset",
-        window_range=(1600, 4096),
-        is_train=False,
-        first_n=all_in_one_config.validation.first_n,
-        filter_symbols=all_in_one_config.validation.filter_symbols,
-        filter_intervals=all_in_one_config.validation.filter_intervals,
-    )
+        # Create datasets and dataloaders
+        dataset = OHLCDatasetMmap("memmap_dataset", window_range=(1600, 4096), is_train=True)
+        valset = OHLCDatasetMmap(
+            "memmap_dataset",
+            window_range=(1600, 4096),
+            is_train=False,
+            first_n=all_in_one_config["validation"]["first_n"],
+            filter_symbols=all_in_one_config["validation"]["filter_symbols"],
+            filter_intervals=all_in_one_config["validation"]["filter_intervals"],
+        )
 
-    # testset = OHLCDatasetMmap("memmap_dataset", window_range=(1600, 4096), is_train=False,
-    #                           filter_symbols=all_in_one_config.test.filter_symbols,
-    #                          filter_intervals=all_in_one_config.test.filter_intervals)
-    dataloader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate_fn
-    )
-    val_dataloader = DataLoader(
-        valset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate_fn
-    )
+        dataloader = DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate_fn
+        )
+        val_dataloader = DataLoader(
+            valset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate_fn
+        )
 
-    # Initialize the model
-    model_config = LlamaConfig(**all_in_one_config.model)
-    model = CryptoLlamaModel(model_config)
+        # Initialize the model
+        model_config = LlamaConfig(**all_in_one_config["model"])
+    with Timer("Initialize Model"):
+        model = CryptoLlamaModel(model_config)
 
     # Initialize the optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     # Initialize the learning rate scheduler
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
+    lr_scheduler_cls = partial(
+        get_cosine_schedule_with_warmup,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps,
     )
 
     # DeepSpeed configuration
-    ds_config = all_in_one_config.distributed
+    ds_config = all_in_one_config["distributed"]
 
     # Initialize DeepSpeed
-    model_engine, optimizer, _, _ = deepspeed.initialize(
-        model=model, optimizer=optimizer, config=ds_config
+    model_engine, optimizer, _, lr_scheduler = deepspeed.initialize(
+        model=model, optimizer=optimizer, config=ds_config, lr_scheduler=lr_scheduler_cls
     )
+
+    # Initialize wandb if needed
+    wandb_log = all_in_one_config.get("wandb", {}).get("enabled", False)
+    if wandb_log:
+        wandb.init(project=all_in_one_config["wandb"]["project"], config=all_in_one_config)
 
     # Train the model
     train(
@@ -145,7 +149,9 @@ def main():
         dataloader,
         val_dataloader,
         optimizer,
-        scheduler,
+        lr_scheduler,
+        total_steps,
+        wandb_log,
     )
 
 

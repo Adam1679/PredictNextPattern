@@ -1,6 +1,11 @@
 data:
-
+  data_dir: memmap_dataset
 model:
+  vocab_size:  1
+  padded_vocab_size: null
+  n_layer:  8
+  n_head:  4
+  n_embd: 512
 
 validation:
   interval: 100
@@ -20,14 +25,18 @@ test:
   filter_symbols: null
   filter_intervals: 0.0
 
+wandb:
+  enabled: False
+  project: null
+  entity: null
+  run_name: null
+  tags: ["your_tag1", "your_tag2"]
 
 optimizer:
-  name:  Adam
-  lr: 0.001
-  weight_decay: 0.0
   batch_size: &bsz 32
-  num_epochs: 10
-  learning_rate: 5e-5
+  total_steps: &steps 10000
+  lr: 0.001
+  weight_decay: 0.01
   warmup_steps: 100
 
 checkpointing:
@@ -36,17 +45,9 @@ checkpointing:
   keep_n_checkpoints: 1
 
 distributed:
-  train_batch_size: *bsz,
+  train_batch_size: *bsz
   fp16:
     enabled: True
+
   zero_optimization:
     stage: 2
-    offload_optimizer:
-      device: cpu
-      pin_memory: True
-  scheduler:
-    type": WarmupLR
-    params":
-      warmup_min_lr: 0
-      warmup_max_lr: learning_rate
-      warmup_num_steps: warmup_steps
