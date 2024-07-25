@@ -2,10 +2,11 @@ data:
  data_dir: memmap_dataset
  max_seq_len: &seq_len 2048
  min_seq_len: 1024
+ num_workers: 4
 model: 
  vocab_size:  1
- input_size: 5
- output_size: 5
+ input_size: 4
+ output_size: 4
  hidden_size: 256
  intermediate_size: 1024
  num_hidden_layers: 9
@@ -29,6 +30,7 @@ model:
 validation: 
  interval: 100
  first_n: 10000
+ batch_size: 16
  # metrics: 
  #  - mse
  #  - mae
@@ -44,15 +46,16 @@ test:
  filter_symbols: null
  filter_intervals: 0.0
 
-wandb: 
- enabled: False
- project: null
- entity: null
- run_name: null
- tags: ["your_tag1", "your_tag2"]
+logging: 
+ log_interval: 1
+ wandb_enabled: False
+ wandb_project: null
+ wandb_entity: null
+ wandb_run_name: null
+ wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 
- batch_size: &bsz 32
+ batch_size: &bsz 16
  total_steps: &steps 10000
  lr: 0.001
  weight_decay: 0.01
@@ -64,9 +67,12 @@ checkpointing:
  keep_n_checkpoints: 1
 
 distributed: 
- train_batch_size: *bsz
+ train_micro_batch_size_per_gpu: *bsz
+ gradient_clipping: 1.0
  fp16: 
+  enabled: False
+ bf16: 
   enabled: False
 
  zero_optimization: 
-  stage: 2
+  stage: 0

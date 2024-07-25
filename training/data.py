@@ -33,8 +33,12 @@ class OHLCDatasetMmap(IterableDataset):
         filter_types=None,
         filter_intervals=None,
         first_n=float("inf"),
+        rank=0,
+        world_size=1,
     ):
         self.window_range = window_range
+        self.rank = rank
+        self.world_size = world_size
         self.window = window_range[0] if window_range[0] == window_range[1] else None
         self.is_train = is_train
         self.data_root = os.path.join(data_root, "train" if is_train else "test")
@@ -74,25 +78,35 @@ class OHLCDatasetMmap(IterableDataset):
                 self.prefix_sum.append(self.prefix_sum[-1] + size)
 
         self.total_size = self.prefix_sum[-1]
+        # Partition the data based on rank and world_size
+        self.start = self.rank * (self.total_size // self.world_size)
+        self.end = (self.rank + 1) * (self.total_size // self.world_size)
+        if self.rank == self.world_size - 1:
+            self.end = self.total_size
 
     def __len__(self):
-        return self.total_size
+        return self.end - self.start
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         num_workers = worker_info.num_workers if worker_info is not None else 1
         worker_id = worker_info.id if worker_info is not None else 0
-        rng = random.Random(self.random_seed + worker_id)
-        i = 0
-        per_worker = int(math.ceil(self.total_size / float(num_workers)))
-        print(f"Worker {worker_id} will process {per_worker} samples")
-        start = worker_id * per_worker
-        end = min(start + per_worker, self.total_size)
+        rng = random.Random(self.random_seed + self.rank * num_workers + worker_id)
 
-        while i < per_worker:
-            randint = rng.randint(start, end)
-            i += 1
+        per_worker = int(math.ceil((self.end - self.start) / float(num_workers)))
+        worker_start = self.start + worker_id * per_worker
+        worker_end = min(worker_start + per_worker, self.end)
+
+        while True:
+            randint = rng.randint(worker_start, worker_end - 1)
             yield self.__getitem__(randint)
+
+    def normalize(self, ohlcv):
+        # ohlcv = torch.log(ohlcv / (ohlcv[0] + 1e-12))
+        ohlcv = ohlcv / (ohlcv[0] + 1e-12) - 1
+        ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
+        ohlcv = torch.clamp_(ohlcv, -10, 10) * 100
+        return ohlcv
 
     def __getitem__(self, index):
         bin_idx = bisect_right(self.prefix_sum, index) - 1
@@ -110,12 +124,12 @@ class OHLCDatasetMmap(IterableDataset):
         end = min(offset + window, max_time_len)
         actual_length = end - start
 
-        ohlcv = torch.zeros((actual_length, 5), dtype=torch.float32)
+        ohlcv = torch.zeros((actual_length, 4), dtype=torch.float32)
         ohlcv[:actual_length, 0] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
         ohlcv[:actual_length, 1] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
         ohlcv[:actual_length, 2] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
         ohlcv[:actual_length, 3] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
-        ohlcv[:actual_length, 4] = torch.tensor(arr[start:end, 4], dtype=torch.float32)
+        ohlcv = self.normalize(ohlcv)
         return {
             "symbol": symbol,
             "type": type_str,
@@ -132,37 +146,64 @@ class OHLCDatasetMmap(IterableDataset):
         # Get the maximum sequence length in the batch
         max_len = max(seq.size(0) for seq in inputs)
 
-        # Pad sequences to max_len
+        # Pad sequences to max_len and create attention masks
         padded_inputs = []
+        attention_masks = []
         for seq in inputs:
-            # seq: (seq_len, 5)
-            if seq.size(0) < max_len:
+            seq_len = seq.size(0)
+            # Create attention mask
+            attention_mask = torch.ones(seq_len, dtype=torch.long, device=seq.device)
+            if seq_len < max_len:
                 padding = torch.full(
-                    (max_len - seq.size(0), seq.size(1)),
+                    (max_len - seq_len, seq.size(1)),
                     pad_value,
                     dtype=seq.dtype,
                     device=seq.device,
                 )
                 padded_seq = torch.cat([seq, padding], dim=0)
+                # Update attention mask
+                attention_mask = torch.cat(
+                    [
+                        attention_mask,
+                        torch.zeros(max_len - seq_len, dtype=torch.long, device=seq.device),
+                    ],
+                    dim=0,
+                )
             else:
                 padded_seq = seq[:max_len, :]
+                attention_mask = attention_mask[:max_len]
             padded_inputs.append(padded_seq)
+            attention_masks.append(attention_mask)
 
-        # Stack the padded sequences
+        # Stack the padded sequences and attention masks
         stacked_inputs = torch.stack(padded_inputs)
+        stacked_attention_masks = torch.stack(attention_masks)
+
         batched_inputs = {
             "symbol": [item["symbol"] for item in batch],
             "type": [item["type"] for item in batch],
             "interval": [item["interval"] for item in batch],
             "inputs": stacked_inputs,
+            "attention_mask": stacked_attention_masks,
         }
+
         return batched_inputs
 
 
 if __name__ == "__main__":
-    dataset = OHLCDatasetMmap("memmap_dataset", window_range=(1600, 4096), is_train=True)
+    dataset = OHLCDatasetMmap(
+        "memmap_dataset", window_range=(1600, 4096), is_train=True, rank=0, world_size=8
+    )
     dataloader = DataLoader(dataset, batch_size=16, num_workers=16, collate_fn=dataset.collate_fn)
     for i, data in enumerate(dataloader):
-        print(data["inputs"].shape)
+        print(data["inputs"].max())
+        # print(data["attention_mask"].shape)
         if i > 500:
             break
+
+    # val_dataset = OHLCDatasetMmap(
+    #     "memmap_dataset", window_range=(1600, 4096), is_train=False, first_n=10_000
+    # )
+    # val_loader = DataLoader(
+    #     val_dataset, batch_size=16, num_workers=0, collate_fn=val_dataset.collate_fn
+    # )

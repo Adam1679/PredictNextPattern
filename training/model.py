@@ -28,7 +28,7 @@ class CryptoLlamaModel(nn.Module):
         super().__init__()
         self.model = LlamaModel(config)
         self.in_proj = nn.Linear(config.input_size, config.hidden_size)
-        self.out_proj = nn.Linear(config.input_size, config.output_size)
+        self.out_proj = nn.Linear(config.hidden_size, config.output_size)
 
     def forward(
         self,
@@ -39,8 +39,8 @@ class CryptoLlamaModel(nn.Module):
         inputs = self.in_proj(inputs)  # (batch_size, seq_len, hidden_size)
         outputs = self.model(inputs_embeds=inputs, attention_mask=attention_mask)
         last_layer_hidden_states = outputs.last_hidden_state
-        outputs = self.out_proj(last_layer_hidden_states)  # (batch_size, seq_len, output_size)
-        return last_layer_hidden_states
+        prediction = self.out_proj(last_layer_hidden_states)  # (batch_size, seq_len, output_size)
+        return prediction
 
     def num_parameters(self):
         return sum(p.numel() for p in self.parameters())
