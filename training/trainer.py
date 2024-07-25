@@ -60,13 +60,34 @@ def input_output_distribution(batch, outputs):
     return metrics
 
 
+# learning rate decay scheduler (cosine with warmup)
+def get_lr(config, it):
+    import math
+
+    max_lr, min_lr = config["optimizer"]["lr"], config["optimizer"]["min_lr"]
+    warmup_iters = config["optimizer"]["warmup_steps"]
+    total_steps = config["optimizer"]["total_steps"]
+    # 1) linear warmup for warmup_iters steps
+    if it < warmup_iters:
+        return max_lr * it / warmup_iters
+    # 2) if it > lr_decay_iters, return min learning rate
+    lr_decay_iters = total_steps - warmup_iters
+    if it > lr_decay_iters:
+        return min_lr
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
+    return min_lr + coeff * (max_lr - min_lr)
+
+
 def train(
     all_in_one_config,
     model: DeepSpeedEngine,
     train_dataloader,
     val_dataloader,
     optimizer,
-    scheduler,
+    lr_scheduler,
     max_steps,
 ):
     model.train()
@@ -77,7 +98,8 @@ def train(
     model_dtype = next(model.parameters()).dtype
     for batch in train_dataloader:
         t0 = time.time()
-
+        # for param_group in optimizer.param_groups:
+        #     param_group['lr'] = get_lr(all_in_one_config, num_steps)
         inputs = batch["inputs"] = (
             batch["inputs"].to(model.device).to(model_dtype)
         )  # (batch_size, seq_len, input_size)
@@ -104,7 +126,7 @@ def train(
         if global_norm is None:
             global_norm = torch.tensor(0.0, device=loss.device)
         model.step()
-        scheduler.step()
+        lr_scheduler.step()
         t1 = time.time()
         dt = t1 - t0
         total_tokens.add_(attention_mask.sum().detach().data)
@@ -253,7 +275,7 @@ def main():
     ds_config = all_in_one_config["distributed"]
 
     # Initialize DeepSpeed
-    model_engine, optimizer, _, lr_scheduler = deepspeed.initialize(
+    model_engine, optimizer, lr_scheduler, _ = deepspeed.initialize(
         model=model, optimizer=optimizer, config=ds_config, lr_scheduler=lr_scheduler_cls
     )
 

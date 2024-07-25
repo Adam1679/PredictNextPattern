@@ -29,7 +29,7 @@ model:
 
 validation: 
  interval: -1
- first_n: 10000
+ first_n: 100
  batch_size: 16
  # metrics: 
  #  - mse
@@ -54,11 +54,12 @@ logging:
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 
- batch_size: &bsz 32
- total_steps: &steps 10000
+ batch_size: &bsz 64
+ total_steps: &steps 100000
  lr: 0.001
+ minlr: 0.0001
  weight_decay: 0.01
- warmup_steps: 100
+ warmup_steps: 1000
 
 checkpointing: 
  dir: checkpoints
