@@ -88,6 +88,8 @@ class OHLCDatasetMmap(IterableDataset):
             self.end = self.total_size
 
     def __len__(self):
+        if self.sample_n:
+            return self.sample_n
         return self.end - self.start
 
     def __iter__(self):

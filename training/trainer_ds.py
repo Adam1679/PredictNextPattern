@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+from collections import defaultdict
 from functools import partial
 
 import deepspeed
@@ -73,6 +74,82 @@ def input_output_distribution(batch, outputs):
     return metrics
 
 
+def evaluation_metrics_single(predictions, labels, mask):
+    # predict: [B, T]
+    # label: [B, T]
+    # Compute mean of valid elements along the time dimension
+    dtype = predictions.dtype
+    mask = mask.to(dtype)
+    valid_predictions = predictions * mask
+    valid_labels = labels * mask
+    mean_pred = (valid_predictions.sum(dim=1) / mask.sum(dim=1)).unsqueeze(1)
+    mean_label = (valid_labels.sum(dim=1) / mask.sum(dim=1)).unsqueeze(1)
+
+    # Center the data by subtracting the mean
+    pred_centered = (valid_predictions - mean_pred) * mask
+    label_centered = (valid_labels - mean_label) * mask
+
+    # Compute covariance and standard deviations
+    covariance = (pred_centered * label_centered).sum(dim=1)
+    pred_std = torch.sqrt((pred_centered**2).sum(dim=1))
+    label_std = torch.sqrt((label_centered**2).sum(dim=1))
+
+    # Compute Pearson correlation coefficient for each example
+    pearson_correlation = covariance / (pred_std * label_std + 1e-12)
+
+    # Average the Pearson correlation over the batch dimension
+
+    mae = torch.abs(valid_predictions - valid_labels).sum(dim=1) / mask.sum(dim=1)
+    mse = ((valid_predictions - valid_labels) ** 2).sum(dim=1) / mask.sum(dim=1)
+
+    # calculate the accuracy
+    # Apply mask and get binary predictions (threshold at 0.5)
+    binary_predictions = (predictions >= 0).to(dtype) * mask
+    binary_labels = (labels >= 0).to(dtype) * mask
+    # Calculate True Positives (TP), False Positives (FP), False Negatives (FN)
+    TP = (binary_predictions * binary_labels * mask).sum(dim=1)
+    FP = (binary_predictions * (1 - binary_labels) * mask).sum(dim=1)
+    FN = ((1 - binary_predictions) * binary_labels * mask).sum(dim=1)
+
+    # Calculate precision and recall for each example
+    precision = TP / (TP + FP + 1e-8)  # Adding small value to avoid division by zero
+    recall = TP / (TP + FN + 1e-8)
+    f1 = 2 * precision * recall / (precision + recall + 1e-8)
+    # Handle cases where TP + FP or TP + FN is zero
+    precision[TP + FP == 0] = 0
+    recall[TP + FN == 0] = 0
+    dist.all_reduce(recall, op=dist.ReduceOp.AVG)
+    dist.all_reduce(precision, op=dist.ReduceOp.AVG)
+    dist.all_reduce(f1, op=dist.ReduceOp.AVG)
+    dist.all_reduce(pearson_correlation, op=dist.ReduceOp.AVG)
+    dist.all_reduce(mae, op=dist.ReduceOp.AVG)
+    dist.all_reduce(mse, op=dist.ReduceOp.AVG)
+    avg_recall = recall.mean()
+    avg_precision = precision.mean()
+    avg_f1 = f1.mean()
+    average_correlation = pearson_correlation.mean()
+    avg_mae = mae.mean()
+    avg_mse = mse.mean()
+    metrics = {
+        "correlation/avg": round(average_correlation.item(), 2),
+        "mae/avg": round(avg_mae.item(), 2),
+        "mse/avg": round(avg_mse.item(), 2),
+        "recall/avg": round(avg_recall.item(), 2),
+        "precision/avg": round(avg_precision.item(), 2),
+        "f1/avg": round(avg_f1.item(), 2),
+    }
+    return metrics
+
+
+def evaluation_metrics(predictions, labels, mask):
+    all_metrics = {}
+    for i, name in enumerate(["open", "high", "low", "close"]):
+        metrics = evaluation_metrics_single(predictions[:, :, i], labels[:, :, i], mask)
+        metrics = {f"{name}/{k}": v for k, v in metrics.items()}
+        all_metrics.update(metrics)
+    return all_metrics
+
+
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(config, it):
     import math
@@ -95,6 +172,7 @@ def get_lr(config, it):
 
 
 def train(
+    args,
     all_in_one_config,
     model: DeepSpeedEngine,
     train_dataloader,
@@ -141,13 +219,13 @@ def train(
         total_tokens.add_(attention_mask.sum().detach().data)
         sum_loss.add_(loss.detach().data)
         sum_global_norm.add_(global_norm.detach().data)
-        stats = {}
         val_interval = all_in_one_config["validation"]["interval"]
-        if val_interval > 0 and (step + 1) % val_interval == 0:
-            val_metrics = validate(model, val_dataloader, all_in_one_config["validation"])
-            stats.update(val_metrics)
         eta = (max_steps - step) * dt
         if (step + 1) % all_in_one_config["logging"]["log_interval"] == 0:
+            stats = {}
+            if val_interval > 0 and (step + 1) % val_interval == 0:
+                val_metrics = validate(model, val_dataloader, all_in_one_config["validation"])
+                stats.update(val_metrics)
             dist.all_reduce(sum_loss, op=dist.ReduceOp.AVG)
             dist.all_reduce(sum_global_norm, op=dist.ReduceOp.AVG)
             dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
@@ -161,12 +239,14 @@ def train(
                 "train/tokens_per_sec": int(tokens_per_step / dt),
                 "train/eta(hour)": round(eta / 3600, 2),
             }
+
+            eval_metrics = evaluation_metrics(predictions, targets, valid_positions)
+            eval_metrics = {f"train/{k}": v for k, v in eval_metrics.items()}
             data_stats = input_output_distribution(batch, outputs)
             stats.update(data_stats)
+            stats.update(eval_metrics)
             print_master(stats)
-            total_tokens.zero_()
-            sum_loss.zero_()
-            sum_global_norm.zero_()
+
             if all_in_one_config["logging"]["wandb_enabled"] and RANK == 0:
                 wandb.log(stats, step=step)
 
@@ -174,6 +254,12 @@ def train(
             # Save the model checkpoint
             print_master(f"Saving checkpoint at iteration {step}")
             model.save_checkpoint(f"{all_in_one_config['checkpointing']['dir']}")
+
+        total_tokens.zero_()
+        sum_loss.zero_()
+        sum_global_norm.zero_()
+        if max_steps is not None and step >= max_steps:
+            break
 
     print_master(f"Saving checkpoint at final iteration {step}")
     model.save_checkpoint(f"{all_in_one_config['checkpointing']['dir']}/iter_{step}")
@@ -184,6 +270,7 @@ def validate(model, dataloader, validation_config):
     model.eval()
     total_loss = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     model_dtype = next(model.parameters()).dtype
+    val_metrics_list = defaultdict(list)
     with torch.no_grad():
         val_step = 0
         for batch in tqdm(dataloader, desc="Validating"):
@@ -206,12 +293,19 @@ def validate(model, dataloader, validation_config):
             masked_targets = targets[valid_positions]
 
             s_loss = nn.MSELoss()(masked_predictions, masked_targets)
+            val_metrics = evaluation_metrics(predictions, targets, valid_positions)
+            val_metrics = {f"val/{k}": v for k, v in val_metrics.items()}
+            for k, v in val_metrics.items():
+                val_metrics_list[k].append(v)
             total_loss.add_(s_loss)
             val_step += 1
             del batch
-    dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_loss, op=dist.ReduceOp.AVG)
     model.train()
-    return {"val/loss": total_loss.item() / val_step}
+    stats = {"val/loss": total_loss.item() / val_step}
+    for k, v in val_metrics_list.items():
+        stats[k] = sum(v) / len(v)
+    return stats
 
 
 def load_config(config_path):
@@ -221,10 +315,22 @@ def load_config(config_path):
     return config
 
 
-def main():
+def get_args():
+    import argparse
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--local_rank", type=int, default=0)
+    parser.add_argument("--world_size", type=int, default=1)
+    parser.add_argument("--config", type=str, default="training/config.yaml")
+    parser.add_argument("--eval_only", action="store_true")
+    parser.add_argument("--ckpt", type=str, default="")
+    return parser.parse_args()
+
+
+def main():
+    args = get_args()
     with Timer("Loading config & Initialize Data"):
-        all_in_one_config = load_config("training/config.yaml")
+        all_in_one_config = load_config(args.config)
         print_master("Config\n" + json.dumps(all_in_one_config, indent=4))
 
         # Hyperparameters
@@ -304,6 +410,11 @@ def main():
     model_engine, optimizer, _, _ = deepspeed.initialize(
         model=model, optimizer=optimizer, config=ds_config
     )
+    if args.eval_only:
+        model_engine.load_checkpoint(load_dir=args.ckpt, load_module_only=True)
+        val_metrics = validate(model_engine, val_dataloader, all_in_one_config["validation"])
+        print_master(val_metrics)
+        return
 
     # Initialize wandb if needed
     if all_in_one_config["logging"]["wandb_enabled"] and RANK == 0:
@@ -315,6 +426,7 @@ def main():
 
     # Train the model
     train(
+        args,
         all_in_one_config,
         model_engine,
         dataloader,
