@@ -38,3 +38,4 @@ config.ini
 *.dat
 
 wandb
+checkpoints

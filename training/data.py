@@ -7,7 +7,7 @@ from bisect import bisect_right
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import IterableDataset
 
 
 class Timer:
@@ -36,6 +36,7 @@ class OHLCDatasetMmap(IterableDataset):
         sample_n=None,
         rank=0,
         world_size=1,
+        clip=(-1, 1),
     ):
         self.window_range = window_range
         self.rank = rank
@@ -47,7 +48,7 @@ class OHLCDatasetMmap(IterableDataset):
         self.sample_n = sample_n
         self.random_seed = random_seed
         self.rng = random.Random(random_seed)
-
+        self.clip = clip
         if not os.path.exists(os.path.join(data_root, "metadata.json")):
             raise ValueError("metadata.json not found in {}".format(data_root))
 
@@ -113,7 +114,7 @@ class OHLCDatasetMmap(IterableDataset):
         # ohlcv = torch.log(ohlcv / (ohlcv[0] + 1e-12))
         ohlcv = ohlcv / (ohlcv[0] + 1e-12) - 1
         ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
-        ohlcv = torch.clamp_(ohlcv, -10, 10) * 100
+        ohlcv = torch.clamp_(ohlcv, *self.clip) * 100
         return ohlcv
 
     def __getitem__(self, index):
@@ -201,39 +202,65 @@ class OHLCDatasetMmap(IterableDataset):
 
 
 if __name__ == "__main__":
+    dataset = OHLCDatasetMmap(
+        "memmap_dataset",
+        window_range=(1600, 4096),
+        is_train=True,
+        filter_intervals="1h",
+        filter_types="spot",
+    )
+    print("len dataset ", len(dataset))  # 9,780,256
+
+    dataset = OHLCDatasetMmap(
+        "memmap_dataset",
+        window_range=(1600, 4096),
+        is_train=True,
+        filter_intervals="30m",
+        filter_types="spot",
+    )
+    print("len dataset ", len(dataset))  # 19,560,124
+
+    dataset = OHLCDatasetMmap(
+        "memmap_dataset",
+        window_range=(1600, 4096),
+        is_train=True,
+        filter_intervals="15m",
+        filter_types="spot",
+    )
+    print("len dataset ", len(dataset))  # 156,478,727
+
     # for i in range(8):
     #     dataset = OHLCDatasetMmap(
-    #         "memmap_dataset", window_range=(1600, 4096), is_train=True, rank=i, world_size=8
+    #         "memmap_dataset", window_range=(1600, 4096), is_train=True, rank=i, world_size=8, filter_intervals='1h', filter_types='spot'
     #     )
+    #     print("rank ", str(i), "len dataset ", len(dataset))
     #     min_index = 1e10
     #     max_index = 0
     #     dataloader = DataLoader(dataset, batch_size=16, num_workers=8, collate_fn=dataset.collate_fn)
-    #     for i, data in enumerate(dataloader):
+    # for i, data in enumerate(dataloader):
+    #     max_index = max(*data["index"], max_index)
+    #     min_index = min(min_index, *data["index"])
+    # print(min_index, max_index)
+    # for i in range(8):
+    #     val_dataset = OHLCDatasetMmap(
+    #         "memmap_dataset",
+    #         window_range=(1600, 4096),
+    #         is_train=False,
+    #         first_n=10_00,
+    #         sample_n=10000,
+    #         rank=i,
+    #         world_size=8,
+    #     )
+    #     len_val = len(val_dataset)
+    #     val_loader = DataLoader(
+    #         val_dataset, batch_size=16, num_workers=8, collate_fn=val_dataset.collate_fn
+    #     )
+    #     min_index = 1e12
+    #     max_index = 0
+    #     print("rank ", str(i), "len val_loader ", len(val_loader))
+    #     for i, data in enumerate(val_loader):
     #         max_index = max(*data["index"], max_index)
     #         min_index = min(min_index, *data["index"])
     #         if i > 100000:
     #             break
     #     print(min_index, max_index)
-    for i in range(8):
-        val_dataset = OHLCDatasetMmap(
-            "memmap_dataset",
-            window_range=(1600, 4096),
-            is_train=False,
-            first_n=10_00,
-            sample_n=10000,
-            rank=i,
-            world_size=8,
-        )
-        len_val = len(val_dataset)
-        val_loader = DataLoader(
-            val_dataset, batch_size=16, num_workers=8, collate_fn=val_dataset.collate_fn
-        )
-        min_index = 1e12
-        max_index = 0
-        print("rank ", str(i), "len val_loader ", len(val_loader))
-        for i, data in enumerate(val_loader):
-            max_index = max(*data["index"], max_index)
-            min_index = min(min_index, *data["index"])
-            if i > 100000:
-                break
-        print(min_index, max_index)

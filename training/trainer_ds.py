@@ -51,9 +51,13 @@ def input_output_distribution(batch, outputs):
     mean_seq_len = batch["attention_mask"].float().sum(dim=1).mean().item()
 
     input_mean = inputs.mean().item()
+    input_max = inputs.max().item()
+    input_min = inputs.min().item()
     input_std = inputs.std().item()
     output_mean = outputs.mean().item()
     output_std = outputs.std().item()
+    output_max = outputs.max().item()
+    output_min = outputs.min().item()
     metrics = {
         "data/input_mean": round(input_mean, 4),
         "data/input_std": round(input_std, 4),
@@ -61,6 +65,10 @@ def input_output_distribution(batch, outputs):
         "data/output_std": round(output_std, 4),
         "data/n_unique_symbols": n_unique_symbols,
         "data/mean_seq_len": round(mean_seq_len, 1),
+        "data/input_max": round(input_max, 4),
+        "data/input_min": round(input_min, 4),
+        "data/output_max": round(output_max, 4),
+        "data/output_min": round(output_min, 4),
     }
     return metrics
 
@@ -95,15 +103,14 @@ def train(
     max_steps,
 ):
     model.train()
-    num_steps = 0
     sum_loss = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     sum_global_norm = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     total_tokens = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     model_dtype = next(model.parameters()).dtype
-    for batch in train_dataloader:
+    for step, batch in enumerate(train_dataloader):
         t0 = time.time()
         for param_group in optimizer.param_groups:
-            param_group["lr"] = get_lr(all_in_one_config, num_steps)
+            param_group["lr"] = get_lr(all_in_one_config, step)
         inputs = batch["inputs"] = (
             batch["inputs"].to(model_dtype).to(model.device, non_blocking=True)
         )  # (batch_size, seq_len, input_size)
@@ -122,9 +129,8 @@ def train(
         masked_predictions = predictions[valid_positions]
         masked_targets = targets[valid_positions]
 
-        s_loss = nn.MSELoss(reduction="sum")(masked_predictions, masked_targets)
-        tot = attention_mask.sum().item()
-        loss = s_loss / tot
+        loss = nn.MSELoss()(masked_predictions, masked_targets)
+        attention_mask.sum().item()
         model.backward(loss)
         global_norm = model.get_global_grad_norm()
         if global_norm is None:
@@ -137,22 +143,22 @@ def train(
         sum_global_norm.add_(global_norm.detach().data)
         stats = {}
         val_interval = all_in_one_config["validation"]["interval"]
-        if val_interval > 0 and (num_steps + 1) % val_interval == 0:
+        if val_interval > 0 and (step + 1) % val_interval == 0:
             val_metrics = validate(model, val_dataloader, all_in_one_config["validation"])
             stats.update(val_metrics)
-        eta = (max_steps - num_steps) * dt
-        if (num_steps + 1) % all_in_one_config["logging"]["log_interval"] == 0:
+        eta = (max_steps - step) * dt
+        if (step + 1) % all_in_one_config["logging"]["log_interval"] == 0:
             dist.all_reduce(sum_loss, op=dist.ReduceOp.AVG)
             dist.all_reduce(sum_global_norm, op=dist.ReduceOp.AVG)
             dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
             tokens_per_step = total_tokens.item() / all_in_one_config["logging"]["log_interval"]
             stats = {
-                "train/global_step": num_steps,
+                "train/global_step": step,
                 "train/loss": round(sum_loss.item(), 4),
                 "train/global_grad_norm": round(sum_global_norm.item(), 4),
                 "train/lr": optimizer.param_groups[0]["lr"],
                 "train/time_per_step": round(dt, 4),
-                "train/tokens_per_step": int(tokens_per_step / dt),
+                "train/tokens_per_sec": int(tokens_per_step / dt),
                 "train/eta(hour)": round(eta / 3600, 2),
             }
             data_stats = input_output_distribution(batch, outputs)
@@ -162,13 +168,16 @@ def train(
             sum_loss.zero_()
             sum_global_norm.zero_()
             if all_in_one_config["logging"]["wandb_enabled"] and RANK == 0:
-                wandb.log(stats, step=num_steps)
+                wandb.log(stats, step=step)
 
-        num_steps += 1
-        if num_steps >= max_steps:
-            break
+        if (step + 1) % all_in_one_config["checkpointing"]["interval"] == 0:
+            # Save the model checkpoint
+            print_master(f"Saving checkpoint at iteration {step}")
+            model.save_checkpoint(f"{all_in_one_config['checkpointing']['dir']}")
 
-        del batch
+    print_master(f"Saving checkpoint at final iteration {step}")
+    model.save_checkpoint(f"{all_in_one_config['checkpointing']['dir']}/iter_{step}")
+    wandb.finish()
 
 
 def validate(model, dataloader, validation_config):
@@ -219,26 +228,35 @@ def main():
         print_master("Config\n" + json.dumps(all_in_one_config, indent=4))
 
         # Hyperparameters
-        batch_size = all_in_one_config["optimizer"]["batch_size"]
         val_batch_size = all_in_one_config["validation"]["batch_size"]
+        batch_size = all_in_one_config["optimizer"]["batch_size"]
+        assert batch_size % WORLD_SIZE == 0, "Batch size must be divisible by the number of GPUs"
+        assert (
+            val_batch_size % WORLD_SIZE == 0
+        ), "Batch size must be divisible by the number of GPUs"
+
         total_steps = all_in_one_config["optimizer"]["total_steps"]
         learning_rate = all_in_one_config["optimizer"]["lr"]
         weight_decay = all_in_one_config["optimizer"]["weight_decay"]
         warmup_steps = all_in_one_config["optimizer"]["warmup_steps"]
         seq_len = all_in_one_config["data"]["max_seq_len"]
         min_seq_len = all_in_one_config["data"]["min_seq_len"]
+        batch_size_per_rank = batch_size // WORLD_SIZE
+        val_batch_size_per_rank = val_batch_size // WORLD_SIZE
 
         # Create datasets and dataloaders
         dataset = OHLCDatasetMmap(
-            all_in_one_config["data"]["data_dir"],
+            data_root=all_in_one_config["data"]["data_root"],
             window_range=(min_seq_len, seq_len),
             is_train=True,
             world_size=WORLD_SIZE,
             rank=RANK,
+            filter_symbols=all_in_one_config["data"]["filter_symbols"],
+            filter_intervals=all_in_one_config["data"]["filter_intervals"],
         )
         valset = OHLCDatasetMmap(
-            "memmap_dataset",
-            window_range=(1600, 4096),
+            all_in_one_config["data"]["data_root"],
+            window_range=(min_seq_len, seq_len),
             is_train=False,
             sample_n=all_in_one_config["validation"]["sample_n"],
             filter_symbols=all_in_one_config["validation"]["filter_symbols"],
@@ -249,7 +267,7 @@ def main():
 
         dataloader = DataLoader(
             dataset,
-            batch_size=batch_size,
+            batch_size=batch_size_per_rank,
             shuffle=False,
             collate_fn=dataset.collate_fn,
             num_workers=all_in_one_config["data"]["num_workers"],
@@ -257,7 +275,7 @@ def main():
         )
         val_dataloader = DataLoader(
             valset,
-            batch_size=val_batch_size,
+            batch_size=val_batch_size_per_rank,
             shuffle=False,
             collate_fn=dataset.collate_fn,
             num_workers=all_in_one_config["data"]["num_workers"],
