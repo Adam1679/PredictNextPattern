@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -8,6 +9,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import yaml
+import yaml_include
 from data import OHLCDatasetMmap, Timer
 from deepspeed import DeepSpeedEngine
 from model import CryptoLlama, CryptoLlamaModel
@@ -26,6 +28,9 @@ logger.addHandler(logging.StreamHandler())
 deepspeed.init_distributed(dist_backend="nccl")
 RANK = int(os.environ.get("RANK", 0))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
+
+
+yaml.add_constructor("!inc", yaml_include.Constructor(), yaml.Loader)
 
 
 def print_rank(msg):
@@ -100,10 +105,10 @@ def train(
         for param_group in optimizer.param_groups:
             param_group["lr"] = get_lr(all_in_one_config, num_steps)
         inputs = batch["inputs"] = (
-            batch["inputs"].to(model.device).to(model_dtype)
+            batch["inputs"].to(model_dtype).to(model.device, non_blocking=True)
         )  # (batch_size, seq_len, input_size)
         attention_mask = batch["attention_mask"] = batch["attention_mask"].to(
-            model.device
+            model.device, non_blocking=True
         )  # (batch_size, seq_len)
         outputs = model(inputs=inputs, attention_mask=attention_mask)
 
@@ -202,13 +207,16 @@ def validate(model, dataloader, validation_config):
 
 def load_config(config_path):
     with open(config_path, "r") as stream:
-        return yaml.safe_load(stream)
+        config = yaml.load(stream, yaml.Loader)
+    config["model"]["max_position_embeddings"] = config["data"]["max_seq_len"]
+    return config
 
 
 def main():
 
     with Timer("Loading config & Initialize Data"):
         all_in_one_config = load_config("training/config.yaml")
+        print_master("Config\n" + json.dumps(all_in_one_config, indent=4))
 
         # Hyperparameters
         batch_size = all_in_one_config["optimizer"]["batch_size"]
@@ -245,6 +253,7 @@ def main():
             shuffle=False,
             collate_fn=dataset.collate_fn,
             num_workers=all_in_one_config["data"]["num_workers"],
+            pin_memory=True,
         )
         val_dataloader = DataLoader(
             valset,

@@ -14,7 +14,6 @@ class CryptoLlama(LlamaConfig):
         super().__init__(**kwargs)
         self.input_size = kwargs["input_size"]
         self.output_size = kwargs["output_size"]
-        self._num_parameters = None
 
 
 class CryptoLlamaModel(nn.Module):
@@ -31,6 +30,7 @@ class CryptoLlamaModel(nn.Module):
         self.in_proj = nn.Linear(config.input_size, config.hidden_size)
         self.out_proj = nn.Linear(config.hidden_size, config.output_size)
         self.config = config
+        self._num_parameters = None
 
     def forward(
         self,
