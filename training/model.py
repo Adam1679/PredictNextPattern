@@ -14,6 +14,7 @@ class CryptoLlama(LlamaConfig):
         super().__init__(**kwargs)
         self.input_size = kwargs["input_size"]
         self.output_size = kwargs["output_size"]
+        self._num_parameters = None
 
 
 class CryptoLlamaModel(nn.Module):
@@ -29,6 +30,7 @@ class CryptoLlamaModel(nn.Module):
         self.model = LlamaModel(config)
         self.in_proj = nn.Linear(config.input_size, config.hidden_size)
         self.out_proj = nn.Linear(config.hidden_size, config.output_size)
+        self.config = config
 
     def forward(
         self,
@@ -43,4 +45,27 @@ class CryptoLlamaModel(nn.Module):
         return prediction
 
     def num_parameters(self):
-        return sum(p.numel() for p in self.parameters())
+        if self._num_parameters is None:
+            self._num_parameters = sum(p.numel() for p in self.parameters())
+        return self._num_parameters
+
+    def estimate_mfu(self, fwdbwd_per_iter, dt):
+        """estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS"""
+        # first estimate the number of flops we do per iteration.
+        # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
+        N = self.num_parameters()
+        cfg = self.config
+        L, H, Q, T = (
+            cfg.num_hidden_layers,
+            cfg.num_attention_heads,
+            cfg.hidden_size // cfg.num_attention_heads,
+            cfg.max_position_embeddings,
+        )
+        flops_per_token = 6 * N + 12 * L * H * Q * T
+        flops_per_fwdbwd = flops_per_token * T
+        flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
+        # express our flops throughput as ratio of A100 bfloat16 peak flops
+        flops_achieved = flops_per_iter * (1.0 / dt)  # per second
+        flops_promised_h100 = 989e12  # H100 GPU bfloat16 peak flops is 989 TFLOPS
+        mfu = flops_achieved / flops_promised_h100
+        return mfu

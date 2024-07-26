@@ -87,7 +87,6 @@ def train(
     train_dataloader,
     val_dataloader,
     optimizer,
-    lr_scheduler,
     max_steps,
 ):
     model.train()
@@ -98,8 +97,8 @@ def train(
     model_dtype = next(model.parameters()).dtype
     for batch in train_dataloader:
         t0 = time.time()
-        # for param_group in optimizer.param_groups:
-        #     param_group['lr'] = get_lr(all_in_one_config, num_steps)
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = get_lr(all_in_one_config, num_steps)
         inputs = batch["inputs"] = (
             batch["inputs"].to(model.device).to(model_dtype)
         )  # (batch_size, seq_len, input_size)
@@ -126,7 +125,6 @@ def train(
         if global_norm is None:
             global_norm = torch.tensor(0.0, device=loss.device)
         model.step()
-        lr_scheduler.step()
         t1 = time.time()
         dt = t1 - t0
         total_tokens.add_(attention_mask.sum().detach().data)
@@ -144,13 +142,13 @@ def train(
             dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
             tokens_per_step = total_tokens.item() / all_in_one_config["logging"]["log_interval"]
             stats = {
-                "global_step": num_steps,
+                "train/global_step": num_steps,
                 "train/loss": round(sum_loss.item(), 4),
                 "train/global_grad_norm": round(sum_global_norm.item(), 4),
-                "lr": optimizer.param_groups[0]["lr"],
+                "train/lr": optimizer.param_groups[0]["lr"],
                 "train/time_per_step": round(dt, 4),
                 "train/tokens_per_step": int(tokens_per_step / dt),
-                "eta/hour": round(eta / 3600, 2),
+                "train/eta(hour)": round(eta / 3600, 2),
             }
             data_stats = input_output_distribution(batch, outputs)
             stats.update(data_stats)
@@ -234,7 +232,7 @@ def main():
             "memmap_dataset",
             window_range=(1600, 4096),
             is_train=False,
-            first_n=all_in_one_config["validation"]["first_n"],
+            sample_n=all_in_one_config["validation"]["sample_n"],
             filter_symbols=all_in_one_config["validation"]["filter_symbols"],
             filter_intervals=all_in_one_config["validation"]["filter_intervals"],
             world_size=WORLD_SIZE,
@@ -265,18 +263,19 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     # Initialize the learning rate scheduler
-    lr_scheduler_cls = partial(
+    partial(
         get_cosine_schedule_with_warmup,
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
+        num_cycles=1,
     )
 
     # DeepSpeed configuration
     ds_config = all_in_one_config["distributed"]
 
     # Initialize DeepSpeed
-    model_engine, optimizer, lr_scheduler, _ = deepspeed.initialize(
-        model=model, optimizer=optimizer, config=ds_config, lr_scheduler=lr_scheduler_cls
+    model_engine, optimizer, _, _ = deepspeed.initialize(
+        model=model, optimizer=optimizer, config=ds_config
     )
 
     # Initialize wandb if needed
@@ -294,7 +293,6 @@ def main():
         dataloader,
         val_dataloader,
         optimizer,
-        lr_scheduler,
         total_steps,
     )
 

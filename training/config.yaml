@@ -29,7 +29,7 @@ model:
 
 validation: 
  interval: -1
- first_n: 100
+ sample_n: 10000
  batch_size: 16
  # metrics: 
  #  - mse
@@ -50,14 +50,14 @@ logging:
  log_interval: 10
  wandb_enabled: True
  wandb_project: cpt
- wandb_run_name: 'test_run'
+ wandb_run_name: 'test_run2'
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 
  batch_size: &bsz 64
  total_steps: &steps 100000
  lr: 0.001
- minlr: 0.0001
+ min_lr: 0.0001
  weight_decay: 0.01
  warmup_steps: 1000
 
@@ -67,6 +67,8 @@ checkpointing:
  keep_n_checkpoints: 1
 
 distributed: 
+ num_nodes: 1
+ num_gpus: 1
  train_micro_batch_size_per_gpu: *bsz
  gradient_clipping: 1.0
  fp16: 

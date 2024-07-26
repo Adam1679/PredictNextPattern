@@ -33,6 +33,7 @@ class OHLCDatasetMmap(IterableDataset):
         filter_types=None,
         filter_intervals=None,
         first_n=float("inf"),
+        sample_n=None,
         rank=0,
         world_size=1,
     ):
@@ -43,6 +44,7 @@ class OHLCDatasetMmap(IterableDataset):
         self.is_train = is_train
         self.data_root = os.path.join(data_root, "train" if is_train else "test")
         self.first_n = first_n
+        self.sample_n = sample_n
         self.random_seed = random_seed
         self.rng = random.Random(random_seed)
 
@@ -96,10 +98,16 @@ class OHLCDatasetMmap(IterableDataset):
         per_worker = int(math.ceil((self.end - self.start) / float(num_workers)))
         worker_start = self.start + worker_id * per_worker
         worker_end = min(worker_start + per_worker, self.end)
-
+        sample_per_worker = (
+            int(math.ceil(self.sample_n / float(num_workers))) if self.sample_n else None
+        )
+        i = 0
         while True:
             randint = rng.randint(worker_start, worker_end - 1)
+            if sample_per_worker is not None and i > sample_per_worker:
+                break
             yield self.__getitem__(randint)
+            i += 1
 
     def normalize(self, ohlcv):
         # ohlcv = torch.log(ohlcv / (ohlcv[0] + 1e-12))
@@ -137,6 +145,7 @@ class OHLCDatasetMmap(IterableDataset):
             "inputs": ohlcv,
             "bar_start": start,
             "bar_end": end,
+            "index": index,
         }
 
     def collate_fn(self, batch, pad_value=0):
@@ -185,25 +194,46 @@ class OHLCDatasetMmap(IterableDataset):
             "interval": [item["interval"] for item in batch],
             "inputs": stacked_inputs,
             "attention_mask": stacked_attention_masks,
+            "index": [item["index"] for item in batch],
         }
 
         return batched_inputs
 
 
 if __name__ == "__main__":
-    dataset = OHLCDatasetMmap(
-        "memmap_dataset", window_range=(1600, 4096), is_train=True, rank=0, world_size=8
-    )
-    dataloader = DataLoader(dataset, batch_size=16, num_workers=16, collate_fn=dataset.collate_fn)
-    for i, data in enumerate(dataloader):
-        print(data["inputs"].max())
-        # print(data["attention_mask"].shape)
-        if i > 500:
-            break
-
-    # val_dataset = OHLCDatasetMmap(
-    #     "memmap_dataset", window_range=(1600, 4096), is_train=False, first_n=10_000
-    # )
-    # val_loader = DataLoader(
-    #     val_dataset, batch_size=16, num_workers=0, collate_fn=val_dataset.collate_fn
-    # )
+    # for i in range(8):
+    #     dataset = OHLCDatasetMmap(
+    #         "memmap_dataset", window_range=(1600, 4096), is_train=True, rank=i, world_size=8
+    #     )
+    #     min_index = 1e10
+    #     max_index = 0
+    #     dataloader = DataLoader(dataset, batch_size=16, num_workers=8, collate_fn=dataset.collate_fn)
+    #     for i, data in enumerate(dataloader):
+    #         max_index = max(*data["index"], max_index)
+    #         min_index = min(min_index, *data["index"])
+    #         if i > 100000:
+    #             break
+    #     print(min_index, max_index)
+    for i in range(8):
+        val_dataset = OHLCDatasetMmap(
+            "memmap_dataset",
+            window_range=(1600, 4096),
+            is_train=False,
+            first_n=10_00,
+            sample_n=10000,
+            rank=i,
+            world_size=8,
+        )
+        len_val = len(val_dataset)
+        val_loader = DataLoader(
+            val_dataset, batch_size=16, num_workers=8, collate_fn=val_dataset.collate_fn
+        )
+        min_index = 1e12
+        max_index = 0
+        print("rank ", str(i), "len val_loader ", len(val_loader))
+        for i, data in enumerate(val_loader):
+            max_index = max(*data["index"], max_index)
+            min_index = min(min_index, *data["index"])
+            if i > 100000:
+                break
+        print(min_index, max_index)
