@@ -29,7 +29,9 @@ logger.addHandler(logging.StreamHandler())
 deepspeed.init_distributed(dist_backend="nccl")
 RANK = int(os.environ.get("RANK", 0))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
-
+torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
+torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
+torch.set_float32_matmul_precision("high")
 
 yaml.add_constructor("!inc", yaml_include.Constructor(), yaml.Loader)
 
@@ -176,10 +178,20 @@ def train(
     all_in_one_config,
     model: DeepSpeedEngine,
     train_dataloader,
-    val_dataloader,
     optimizer,
     max_steps,
 ):
+    if args.profile:
+        prof = torch.profiler.profile(
+            schedule=torch.profiler.schedule(wait=15, warmup=2, active=3, repeat=1),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(args.profile),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+        )
+        prof.start()
+    else:
+        prof = None
     model.train()
     sum_loss = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     sum_global_norm = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
@@ -214,6 +226,8 @@ def train(
         if global_norm is None:
             global_norm = torch.tensor(0.0, device=loss.device)
         model.step()
+        if prof:
+            prof.step()
         t1 = time.time()
         dt = t1 - t0
         total_tokens.add_(attention_mask.sum().detach().data)
@@ -223,26 +237,30 @@ def train(
         eta = (max_steps - step) * dt
         if (step + 1) % all_in_one_config["logging"]["log_interval"] == 0:
             stats = {}
-            if val_interval > 0 and (step + 1) % val_interval == 0:
-                val_metrics = validate(model, val_dataloader, all_in_one_config["validation"])
-                stats.update(val_metrics)
             dist.all_reduce(sum_loss, op=dist.ReduceOp.AVG)
             dist.all_reduce(sum_global_norm, op=dist.ReduceOp.AVG)
             dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
             tokens_per_step = total_tokens.item() / all_in_one_config["logging"]["log_interval"]
-            stats = {
-                "train/global_step": step,
-                "train/loss": round(sum_loss.item(), 4),
-                "train/global_grad_norm": round(sum_global_norm.item(), 4),
-                "train/lr": optimizer.param_groups[0]["lr"],
-                "train/time_per_step": round(dt, 4),
-                "train/tokens_per_sec": int(tokens_per_step / dt),
-                "train/eta(hour)": round(eta / 3600, 2),
-            }
+            stats.update(
+                {
+                    "train/global_step": step,
+                    "train/loss": round(sum_loss.item(), 4),
+                    "train/global_grad_norm": round(sum_global_norm.item(), 4),
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                    "train/time_per_step": round(dt, 4),
+                    "train/tokens_per_sec": int(tokens_per_step / dt),
+                    "train/eta(hour)": round(eta / 3600, 2),
+                }
+            )
 
             eval_metrics = evaluation_metrics(predictions, targets, valid_positions)
             eval_metrics = {f"train/{k}": v for k, v in eval_metrics.items()}
             data_stats = input_output_distribution(batch, outputs)
+
+            if val_interval > 0 and (step + 1) % val_interval == 0:
+                val_metrics = validate(model, all_in_one_config)
+                stats.update(val_metrics)
+
             stats.update(data_stats)
             stats.update(eval_metrics)
             print_master(stats)
@@ -253,7 +271,9 @@ def train(
         if (step + 1) % all_in_one_config["checkpointing"]["interval"] == 0:
             # Save the model checkpoint
             print_master(f"Saving checkpoint at iteration {step}")
-            model.save_checkpoint(f"{all_in_one_config['checkpointing']['dir']}")
+            model.save_checkpoint(
+                f"{all_in_one_config['checkpointing']['dir']}/{all_in_one_config['logging']['wandb_run_name']}"
+            )
 
         total_tokens.zero_()
         sum_loss.zero_()
@@ -266,14 +286,37 @@ def train(
     wandb.finish()
 
 
-def validate(model, dataloader, validation_config):
+def validate(model, all_in_one_config):
+    val_batch_size = all_in_one_config["validation"]["batch_size"]
+    assert val_batch_size % WORLD_SIZE == 0, "Batch size must be divisible by the number of GPUs"
+    val_batch_size_per_rank = val_batch_size // WORLD_SIZE
+    valset = OHLCDatasetMmap(
+        all_in_one_config["data"]["data_root"],
+        window_range=(
+            all_in_one_config["data"]["min_seq_len"],
+            all_in_one_config["data"]["max_seq_len"],
+        ),
+        is_train=False,
+        sample_n=all_in_one_config["validation"]["sample_n"],
+        filter_symbols=all_in_one_config["validation"]["filter_symbols"],
+        filter_intervals=all_in_one_config["validation"]["filter_intervals"],
+        world_size=WORLD_SIZE,
+        rank=RANK,
+    )
+    val_dataloader = DataLoader(
+        valset,
+        batch_size=val_batch_size_per_rank,
+        shuffle=False,
+        collate_fn=valset.collate_fn,
+        num_workers=all_in_one_config["data"]["num_workers"],
+    )
     model.eval()
     total_loss = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     model_dtype = next(model.parameters()).dtype
     val_metrics_list = defaultdict(list)
     with torch.no_grad():
         val_step = 0
-        for batch in tqdm(dataloader, desc="Validating"):
+        for batch in tqdm(val_dataloader, desc="Validating"):
             inputs = batch["inputs"] = (
                 batch["inputs"].to(model.device).to(model_dtype)
             )  # (batch_size, seq_len, input_size)
@@ -292,12 +335,12 @@ def validate(model, dataloader, validation_config):
             masked_predictions = predictions[valid_positions]
             masked_targets = targets[valid_positions]
 
-            s_loss = nn.MSELoss()(masked_predictions, masked_targets)
+            token_avg_loss = nn.MSELoss()(masked_predictions, masked_targets)
             val_metrics = evaluation_metrics(predictions, targets, valid_positions)
             val_metrics = {f"val/{k}": v for k, v in val_metrics.items()}
             for k, v in val_metrics.items():
                 val_metrics_list[k].append(v)
-            total_loss.add_(s_loss)
+            total_loss.add_(token_avg_loss)
             val_step += 1
             del batch
     dist.all_reduce(total_loss, op=dist.ReduceOp.AVG)
@@ -324,6 +367,7 @@ def get_args():
     parser.add_argument("--config", type=str, default="training/config.yaml")
     parser.add_argument("--eval_only", action="store_true")
     parser.add_argument("--ckpt", type=str, default="")
+    parser.add_argument("--profile", type=str, default="")
     return parser.parse_args()
 
 
@@ -334,12 +378,9 @@ def main():
         print_master("Config\n" + json.dumps(all_in_one_config, indent=4))
 
         # Hyperparameters
-        val_batch_size = all_in_one_config["validation"]["batch_size"]
+
         batch_size = all_in_one_config["optimizer"]["batch_size"]
         assert batch_size % WORLD_SIZE == 0, "Batch size must be divisible by the number of GPUs"
-        assert (
-            val_batch_size % WORLD_SIZE == 0
-        ), "Batch size must be divisible by the number of GPUs"
 
         total_steps = all_in_one_config["optimizer"]["total_steps"]
         learning_rate = all_in_one_config["optimizer"]["lr"]
@@ -348,7 +389,6 @@ def main():
         seq_len = all_in_one_config["data"]["max_seq_len"]
         min_seq_len = all_in_one_config["data"]["min_seq_len"]
         batch_size_per_rank = batch_size // WORLD_SIZE
-        val_batch_size_per_rank = val_batch_size // WORLD_SIZE
 
         # Create datasets and dataloaders
         dataset = OHLCDatasetMmap(
@@ -360,16 +400,6 @@ def main():
             filter_symbols=all_in_one_config["data"]["filter_symbols"],
             filter_intervals=all_in_one_config["data"]["filter_intervals"],
         )
-        valset = OHLCDatasetMmap(
-            all_in_one_config["data"]["data_root"],
-            window_range=(min_seq_len, seq_len),
-            is_train=False,
-            sample_n=all_in_one_config["validation"]["sample_n"],
-            filter_symbols=all_in_one_config["validation"]["filter_symbols"],
-            filter_intervals=all_in_one_config["validation"]["filter_intervals"],
-            world_size=WORLD_SIZE,
-            rank=RANK,
-        )
 
         dataloader = DataLoader(
             dataset,
@@ -379,18 +409,11 @@ def main():
             num_workers=all_in_one_config["data"]["num_workers"],
             pin_memory=True,
         )
-        val_dataloader = DataLoader(
-            valset,
-            batch_size=val_batch_size_per_rank,
-            shuffle=False,
-            collate_fn=dataset.collate_fn,
-            num_workers=all_in_one_config["data"]["num_workers"],
-        )
 
         # Initialize the model
         model_config = CryptoLlama(**all_in_one_config["model"])
     with Timer("Initialize Model"):
-        model = CryptoLlamaModel(model_config)
+        model = CryptoLlamaModel(model_config).to(torch.bfloat16).to(torch.cuda.current_device())
         print_master(f"Number of parameters: {model.num_parameters():,}")
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -405,14 +428,14 @@ def main():
 
     # DeepSpeed configuration
     ds_config = all_in_one_config["distributed"]
-
+    model = torch.compile(model)
     # Initialize DeepSpeed
     model_engine, optimizer, _, _ = deepspeed.initialize(
         model=model, optimizer=optimizer, config=ds_config
     )
     if args.eval_only:
         model_engine.load_checkpoint(load_dir=args.ckpt, load_module_only=True)
-        val_metrics = validate(model_engine, val_dataloader, all_in_one_config["validation"])
+        val_metrics = validate(model_engine, all_in_one_config)
         print_master(val_metrics)
         return
 
@@ -430,7 +453,6 @@ def main():
         all_in_one_config,
         model_engine,
         dataloader,
-        val_dataloader,
         optimizer,
         total_steps,
     )

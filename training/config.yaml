@@ -8,11 +8,11 @@ data:
  filter_types: 'spot'
 model: 
   # !inc training/configs/llama_124M.yaml
-  !inc training/configs/llama_9M.yaml
+  !inc training/configs/llama_28M.yaml
+  # !inc training/configs/llama_9M.yaml
 
 
 test: 
-
  filter_symbols: null
  filter_intervals: 0.0
 
@@ -20,11 +20,11 @@ logging:
  log_interval: 10
  wandb_enabled: True
  wandb_project: cpt
- wandb_run_name: '9M_1h_spot_bsz512'
+ wandb_run_name: '28M_1h_spot_bsz256'
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 
- batch_size: &bsz 512
+ batch_size: &bsz 256
  total_steps: &steps 20000
  lr: 0.001
  min_lr: 0.0001
@@ -32,8 +32,8 @@ optimizer:
  warmup_steps: 1000
 
 validation: 
- interval: -1
- sample_n: 10000
+ interval: 500
+ sample_n: 20000
  batch_size: *bsz
  filter_symbols: null
  filter_intervals: 0.0
