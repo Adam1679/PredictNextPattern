@@ -1,7 +1,7 @@
 import pandas as pd
 
 from training.data import OHLCDatasetMmap
-from training.plotting import plot_ohlc_candlestick_with_volume
+from training.plotting import plot_ohlc_candlestick_with_volume_and_prediction
 
 
 def visualize():
@@ -39,7 +39,13 @@ def visualize():
         )
         df["date"] = pd.to_datetime(df["timestam_s"], unit="s")
         file_name = f"kline_{symbol}_{interval}_{type_str}.html"
-        plot_ohlc_candlestick_with_volume(df, output_filename=file_name)
+        predicted_data = {
+            "date": df["date"],
+            "predicted_price": close_price - 4,
+        }
+        plot_ohlc_candlestick_with_volume_and_prediction(
+            df, predicted_data, output_filename=file_name
+        )
 
 
 if __name__ == "__main__":
