@@ -4,6 +4,7 @@ import os
 import random
 import time
 from bisect import bisect_right
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -37,6 +38,7 @@ class OHLCDatasetMmap(IterableDataset):
         rank=0,
         world_size=1,
         clip=(-1, 1),
+        normalize_price=True,
     ):
         self.window_range = window_range
         self.rank = rank
@@ -49,6 +51,7 @@ class OHLCDatasetMmap(IterableDataset):
         self.random_seed = random_seed
         self.rng = random.Random(random_seed)
         self.clip = clip
+        self.normalize_price = normalize_price
         if not os.path.exists(os.path.join(data_root, "metadata.json")):
             raise ValueError("metadata.json not found in {}".format(data_root))
 
@@ -116,7 +119,8 @@ class OHLCDatasetMmap(IterableDataset):
         # ohlcv = torch.log(ohlcv / (ohlcv[0] + 1e-12))
         ohlcv = ohlcv / (ohlcv[0] + 1e-12) - 1
         ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
-        ohlcv = torch.clamp_(ohlcv, *self.clip) * 100
+        if self.clip:
+            ohlcv = torch.clamp_(ohlcv, *self.clip) * 100
         return ohlcv
 
     def __getitem__(self, index):
@@ -135,12 +139,17 @@ class OHLCDatasetMmap(IterableDataset):
         end = min(offset + window, max_time_len)
         actual_length = end - start
 
-        ohlcv = torch.zeros((actual_length, 4), dtype=torch.float32)
-        ohlcv[:actual_length, 0] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
-        ohlcv[:actual_length, 1] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
-        ohlcv[:actual_length, 2] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
-        ohlcv[:actual_length, 3] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
-        ohlcv = self.normalize(ohlcv)
+        ohlcv = torch.tensor(arr[start:end, :4], dtype=torch.float32)
+        timestamp_s = torch.tensor(arr[start:end, 5], dtype=torch.long)
+        timestamp_start = datetime.fromtimestamp(timestamp_s[0].item())
+
+        # ohlcv = torch.zeros((actual_length, 4), dtype=torch.float32)
+        # ohlcv[:actual_length, 0] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
+        # ohlcv[:actual_length, 1] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
+        # ohlcv[:actual_length, 2] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
+        # ohlcv[:actual_length, 3] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
+        if self.normalize_price:
+            ohlcv = self.normalize(ohlcv)
         return {
             "symbol": symbol,
             "type": type_str,
@@ -148,7 +157,10 @@ class OHLCDatasetMmap(IterableDataset):
             "inputs": ohlcv,
             "bar_start": start,
             "bar_end": end,
+            "timestamp_s": timestamp_s,
+            "timestamp_s_start": timestamp_start,
             "index": index,
+            "seq_len": actual_length,
         }
 
     def collate_fn(self, batch, pad_value=0):
@@ -193,8 +205,10 @@ class OHLCDatasetMmap(IterableDataset):
 
         batched_inputs = {
             "symbol": [item["symbol"] for item in batch],
+            "seq_len": [item["seq_len"] for item in batch],
             "type": [item["type"] for item in batch],
             "interval": [item["interval"] for item in batch],
+            "timestamp_start": [item["timestamp_start"] for item in batch],
             "inputs": stacked_inputs,
             "attention_mask": stacked_attention_masks,
             "index": [item["index"] for item in batch],
@@ -203,7 +217,7 @@ class OHLCDatasetMmap(IterableDataset):
         return batched_inputs
 
 
-if __name__ == "__main__":
+def preview_size():
     dataset = OHLCDatasetMmap(
         "memmap_dataset",
         window_range=(1600, 4096),
@@ -211,7 +225,7 @@ if __name__ == "__main__":
         filter_intervals="1h",
         filter_types="spot",
     )
-    print("len dataset ", len(dataset))  # 9,780,256
+    print("len dataset ", len(dataset))  # 10,599,248
 
     dataset = OHLCDatasetMmap(
         "memmap_dataset",
@@ -220,7 +234,7 @@ if __name__ == "__main__":
         filter_intervals="30m",
         filter_types="spot",
     )
-    print("len dataset ", len(dataset))  # 19,560,124
+    print("len dataset ", len(dataset))  # 21,198,093
 
     dataset = OHLCDatasetMmap(
         "memmap_dataset",
@@ -229,8 +243,21 @@ if __name__ == "__main__":
         filter_intervals="15m",
         filter_types="spot",
     )
-    print("len dataset ", len(dataset))  # 156,478,727
+    print("len dataset ", len(dataset))  # 169,582,431
 
+
+if __name__ == "__main__":
+    # preview_size()
+    dataset = OHLCDatasetMmap(
+        "memmap_dataset",
+        window_range=(400, 400),
+        is_train=True,
+        filter_intervals="1h",
+        filter_symbols=["BTCUSDT", "ETHUSDT"],
+        filter_types="um",
+    )
+
+    print("dataset at 200: ", dataset[200])
     # for i in range(8):
     #     dataset = OHLCDatasetMmap(
     #         "memmap_dataset", window_range=(1600, 4096), is_train=True, rank=i, world_size=8, filter_intervals='1h', filter_types='spot'

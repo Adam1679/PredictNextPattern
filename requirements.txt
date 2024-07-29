@@ -8,3 +8,4 @@ wandb
 tqdm
 deepspeed
 accelerate==0.32.1
+bokeh

@@ -14,11 +14,11 @@ def load_and_save_to_memmap(
     dataset_name,
     output_dir,
     split_date="",
-    columns=["open_price", "high_price", "low_price", "close_price", "volume"],
+    columns=["open_price", "high_price", "low_price", "close_price", "volume", "open_timestamp_s"],
 ):
     # Load the dataset
     all_dataset = load_dataset(dataset_name, keep_in_memory=True)
-    train_split_timestamp_ns = datetime.strptime(split_date, "%Y-%m-%d")
+    train_split_timestamp_s = datetime.strptime(split_date, "%Y-%m-%d").timestamp()
 
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -37,6 +37,7 @@ def load_and_save_to_memmap(
         # Process each is_train
         for split_name in dataset.keys():
             split_data = dataset[split_name].to_pandas()
+            split_data["open_timestamp_s"] = split_data["open_timestamp"].astype(int) / 1e9
             print("Grouping data... for {}".format(split_name), end=" ")
             start_time = time.time()
             grouped = split_data.groupby(["symbol", "type", "interval"])
@@ -52,11 +53,11 @@ def load_and_save_to_memmap(
                 # Check if all required columns exist
                 if is_train:
                     data_selected = group.loc[
-                        group.open_timestamp <= train_split_timestamp_ns, columns
+                        group.open_timestamp_s <= train_split_timestamp_s, columns
                     ]
                 else:
                     data_selected = group.loc[
-                        group.open_timestamp > train_split_timestamp_ns, columns
+                        group.open_timestamp_s > train_split_timestamp_s, columns
                     ]
                 if data_selected.shape[0] == 0:
                     # print("No data for {}_{}_{}_{}. date range {} to {}".format(split_name, symbol, type, interval, group.open_timestamp.min(), group.open_timestamp.max()))
@@ -120,7 +121,7 @@ def main():
     output_dir = "memmap_dataset"
 
     # Load data from Hugging Face and save to memmap
-    # load_and_save_to_memmap(dataset_name, output_dir, split_date='2024-01-01')
+    load_and_save_to_memmap("adamzzzz/binance-klines-20240721", output_dir, split_date="2024-04-01")
 
     # Load data from memmap
     veryfy_precision_error(output_dir)
