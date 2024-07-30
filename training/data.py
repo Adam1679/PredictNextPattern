@@ -4,7 +4,6 @@ import os
 import random
 import time
 from bisect import bisect_right
-from datetime import datetime
 
 import numpy as np
 import torch
@@ -21,6 +20,17 @@ class Timer:
 
     def __exit__(self, type, value, traceback):
         print(f"{self.msg}: {time.time() - self.t:.2f} seconds")
+
+
+INTERVAL_TO_SECONDS = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
 
 
 class OHLCDatasetMmap(IterableDataset):
@@ -126,6 +136,7 @@ class OHLCDatasetMmap(IterableDataset):
     def __getitem__(self, index):
         bin_idx = bisect_right(self.prefix_sum, index) - 1
         offset = index - self.prefix_sum[bin_idx]
+
         split_name, meta = self.split_file_metas[bin_idx]
         _, symbol, type_str, interval, _ = split_name.split("_")
         filename = os.path.join(self.data_root, meta["filename"])
@@ -140,8 +151,7 @@ class OHLCDatasetMmap(IterableDataset):
         actual_length = end - start
 
         ohlcv = torch.tensor(arr[start:end, :4], dtype=torch.float32)
-        timestamp_s = torch.tensor(arr[start:end, 5], dtype=torch.long)
-        timestamp_s_start = datetime.fromtimestamp(timestamp_s[0].item())
+        timestamp_s_start = meta["open_timestamp_s_start"] + INTERVAL_TO_SECONDS[interval] * start
 
         # ohlcv = torch.zeros((actual_length, 4), dtype=torch.float32)
         # ohlcv[:actual_length, 0] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
@@ -157,7 +167,6 @@ class OHLCDatasetMmap(IterableDataset):
             "inputs": ohlcv,
             "bar_start": start,
             "bar_end": end,
-            "timestamp_s": timestamp_s,
             "timestamp_s_start": timestamp_s_start,
             "index": index,
             "seq_len": actual_length,

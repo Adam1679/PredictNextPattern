@@ -407,7 +407,7 @@ def main():
             shuffle=False,
             collate_fn=dataset.collate_fn,
             num_workers=all_in_one_config["data"]["num_workers"],
-            pin_memory=True,
+            pin_memory=False,
         )
 
         # Initialize the model
