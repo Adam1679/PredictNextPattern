@@ -6,8 +6,11 @@ import time
 from bisect import bisect_right
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, IterableDataset
+
+from training.plotting import plot_ohlc_candlestick_with_volume
 
 
 class Timer:
@@ -129,8 +132,10 @@ class OHLCDatasetMmap(IterableDataset):
         # ohlcv = torch.log(ohlcv / (ohlcv[0] + 1e-12))
         ohlcv = ohlcv / (ohlcv[0] + 1e-12) - 1
         ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
-        if self.clip:
-            ohlcv = torch.clamp_(ohlcv, *self.clip) * 100
+        return ohlcv
+
+    def unnormalize(self, ohlcv):
+        ohlcv = (ohlcv / 100 + 1) * ohlcv[0]
         return ohlcv
 
     def __getitem__(self, index):
@@ -150,14 +155,15 @@ class OHLCDatasetMmap(IterableDataset):
         end = min(offset + window, max_time_len)
         actual_length = end - start
 
-        ohlcv = torch.tensor(arr[start:end, :4], dtype=torch.float32)
         timestamp_s_start = meta["open_timestamp_s_start"] + INTERVAL_TO_SECONDS[interval] * start
 
-        # ohlcv = torch.zeros((actual_length, 4), dtype=torch.float32)
-        # ohlcv[:actual_length, 0] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
-        # ohlcv[:actual_length, 1] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
-        # ohlcv[:actual_length, 2] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
-        # ohlcv[:actual_length, 3] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
+        ohlcv = torch.zeros((actual_length, 4), dtype=torch.float32)
+        ohlcv[:actual_length, 0] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
+        ohlcv[:actual_length, 1] = torch.tensor(arr[start:end, 1], dtype=torch.float32)
+        ohlcv[:actual_length, 2] = torch.tensor(arr[start:end, 2], dtype=torch.float32)
+        ohlcv[:actual_length, 3] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
+
+        volume = torch.tensor(arr[start:end, 4], dtype=torch.float32)
         if self.normalize_price:
             ohlcv = self.normalize(ohlcv)
         return {
@@ -168,6 +174,7 @@ class OHLCDatasetMmap(IterableDataset):
             "bar_start": start,
             "bar_end": end,
             "timestamp_s_start": timestamp_s_start,
+            "volume": volume,
             "index": index,
             "seq_len": actual_length,
         }
@@ -211,7 +218,8 @@ class OHLCDatasetMmap(IterableDataset):
         # Stack the padded sequences and attention masks
         stacked_inputs = torch.stack(padded_inputs)
         stacked_attention_masks = torch.stack(attention_masks)
-
+        if self.clip:
+            stacked_inputs = torch.clamp(stacked_inputs, self.clip[0] * 100, self.clip[1] * 100)
         batched_inputs = {
             "symbol": [item["symbol"] for item in batch],
             "seq_len": [item["seq_len"] for item in batch],
@@ -224,6 +232,35 @@ class OHLCDatasetMmap(IterableDataset):
         }
 
         return batched_inputs
+
+    def plot_kline(self, index, output_file=""):
+        item = self.__getitem__(index)
+        symbol = item["symbol"]
+        volume = item["volume"].numpy()
+        interval = item["interval"]
+        item["type"]
+        price = item["inputs"]
+        if self.normalize:
+            price = self.unnormalize(price)
+
+        # structure the data
+        price = price.numpy()
+        data_as_list_of_dict = [
+            {
+                "timestamp_s": item["timestamp_s_start"] + i * INTERVAL_TO_SECONDS[interval],
+                "open": price[i, 3],
+                "high": price[i, 1],
+                "low": price[i, 2],
+                "close": price[i, 0],
+                "volume": volume[i],
+            }
+            for i in range(price.shape[0])
+        ]
+        df = pd.DataFrame(data_as_list_of_dict)
+        df["date"] = pd.to_datetime(df["timestamp_s"], unit="s")
+        plot_ohlc_candlestick_with_volume(
+            df, output_filename=output_file, symbol=symbol, interval=interval
+        )
 
 
 def preview_size():

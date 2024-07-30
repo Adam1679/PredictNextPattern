@@ -17,7 +17,7 @@ test:
  filter_intervals: 0.0
 
 logging: 
- log_interval: 1
+ log_interval: 10
  wandb_enabled: True
  wandb_project: cpt
  wandb_run_name: '28M_1h_spot_bsz256'
@@ -36,7 +36,7 @@ validation:
  sample_n: 20000
  batch_size: *bsz
  filter_symbols: null
- filter_intervals: 0.0
+ filter_intervals: ['1h']
 
 checkpointing: 
  dir: checkpoints

@@ -7,7 +7,7 @@ from bokeh.models import ColumnDataSource, DataRange1d, HoverTool, Legend, Numer
 from bokeh.plotting import figure
 
 
-def plot_ohlc_candlestick_with_volume(data, output_filename="candlestick_volume_chart.html"):
+def plot_ohlc_candlestick_with_volume(data, symbol="", interval="", output_filename=""):
     # Convert data to pandas DataFrame if it's not already
     df = pd.DataFrame(data)
     date = pd.to_datetime(df["date"])
@@ -35,7 +35,7 @@ def plot_ohlc_candlestick_with_volume(data, output_filename="candlestick_volume_
         tools=TOOLS,
         width=1000,
         height=400,
-        title="Candlestick with Volume (Minute-level)",
+        title="Candlestick with Volume {}@{}".format(symbol, interval),
     )
     p1.x_range = DataRange1d(range_padding=0.05)
     p1.y_range = DataRange1d(range_padding=0.05)
@@ -107,13 +107,13 @@ def plot_ohlc_candlestick_with_volume(data, output_filename="candlestick_volume_
 
     # Align the charts
     charts = column(p1, p2)
-
-    save(charts, filename=output_filename)
-    print(f"Chart saved to {output_filename}")
+    if output_filename:
+        save(charts, filename=output_filename)
+        print(f"Chart saved to {output_filename}")
 
 
 def plot_ohlc_candlestick_with_volume_and_prediction(
-    data, predicted_data, output_filename="candlestick_volume_prediction_chart.html"
+    data, predicted_data, symbol="", interval="", output_filename=""
 ):
     # Convert data to pandas DataFrame if it's not already
     df = pd.DataFrame(data)
@@ -147,7 +147,7 @@ def plot_ohlc_candlestick_with_volume_and_prediction(
         tools=TOOLS,
         width=1000,
         height=400,
-        title="Candlestick with Volume and Predicted Price",
+        title="Candlestick with Volume and Predicted Price {}@{}".format(symbol, interval),
     )
     p1.x_range = DataRange1d(range_padding=0.05)
     p1.y_range = DataRange1d(range_padding=0.05)
@@ -237,8 +237,9 @@ def plot_ohlc_candlestick_with_volume_and_prediction(
 
     # Align the charts
     charts = column(p1, p2)
-    save(charts, output_filename)
-    print(f"Chart saved to {output_filename}")
+    if output_filename:
+        save(charts, output_filename)
+        print(f"Chart saved to {output_filename}")
 
 
 # Example usage
