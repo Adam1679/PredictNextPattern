@@ -7,7 +7,7 @@ import numpy as np
 
 
 class TestPrepare(unittest.TestCase):
-    def test():
+    def test_prepare(self):
         input_dir = "memmap_dataset"
         # Load metadata
         # test precision

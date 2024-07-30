@@ -5,10 +5,30 @@ import time
 from datetime import datetime
 
 import numpy as np
+import pandas as pd
 from datasets import load_dataset
 from tqdm import tqdm
 
 num_proc = os.cpu_count() - 4
+
+INTERVAL_TO_SECONDS = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
+
+INTERVAL_TO_TIMEDELT = {
+    "1m": pd.Timedelta(minutes=1),
+    "5m": pd.Timedelta(minutes=5),
+    "15m": pd.Timedelta(minutes=15),
+    "30m": pd.Timedelta(minutes=30),
+    "1h": pd.Timedelta(hours=1),
+    "4h": pd.Timedelta(hours=4),
+}
 
 
 def load_and_save_to_memmap(
@@ -39,19 +59,37 @@ def load_and_save_to_memmap(
         split_data = all_dataset[split_name].to_pandas()
         split_data["open_timestamp_s"] = split_data["open_timestamp"].astype(int) / 1e9
         print("Grouping data... for {}".format(split_name), end=" ")
-        start_time = time.time()
+        split_data = split_data.sort_values(["symbol", "type", "interval", "open_timestamp"])
         grouped = split_data.groupby(["symbol", "type", "interval"])
-        time.time() - start_time
-        # print("Takes {:.2f} seconds".format(group_time))
-        for (symbol, type, interval), group in tqdm(
+        for (symbol, type_str, interval), group in tqdm(
             grouped,
             desc="Processing data for {}".format(split_name),
         ):
             # Sort by timestamp
             group = group.sort_values("open_timestamp")
+            # # Create a complete date range
+            # start_time = group["open_timestamp"].min()
+            # end_time = group["open_timestamp"].max()
+            # complete_range = pd.date_range(
+            #     start=start_time, end=end_time, freq=INTERVAL_TO_TIMEDELT[interval]
+            # )
+
+            # # Reindex the group with the complete range and forward fill
+            # filled_group = group.set_index("open_timestamp").reindex(complete_range)
+            # # Mark missing data
+            # filled_group["missing"] = filled_group["missing"].isna()
+            # group = group.ffill().reset_index()
 
             # Check if all required columns exist
+            min_timestamp = group["open_timestamp_s"].iloc[0]
+            max_timestamp = group["open_timestamp_s"].iloc[-1]
+
+            num_interval = int((max_timestamp - min_timestamp) // INTERVAL_TO_SECONDS[interval] + 1)
+            assert (
+                num_interval == group.shape[0]
+            ), f"num_interval: {num_interval}, arr.shape[0]: {group.shape[0]}"
             for is_train in [True, False]:
+
                 if is_train:
                     data_selected = group.loc[
                         group.open_timestamp_s <= train_split_timestamp_s, columns
@@ -61,11 +99,11 @@ def load_and_save_to_memmap(
                         group.open_timestamp_s > train_split_timestamp_s, columns
                     ]
                 if data_selected.shape[0] == 0:
-                    # print("No data for {}_{}_{}_{}. date range {} to {}".format(split_name, symbol, type, interval, group.open_timestamp.min(), group.open_timestamp.max()))
+                    # print("No data for {}_{}_{}_{}. date range {} to {}".format(split_name, symbol, type_str, interval, group.open_timestamp.min(), group.open_timestamp.max()))
                     continue
                 arr = np.array(data_selected.values, dtype=np.float32)  # (n_samples, n_features)
                 subdir = "train" if is_train else "test"
-                split_key = f"{split_name}_{symbol}_{type}_{interval}_{subdir}"
+                split_key = f"{split_name}_{symbol}_{type_str}_{interval}_{subdir}"
                 file_name = f"{split_key}.dat"
 
                 memmap_path = os.path.join(
@@ -82,9 +120,10 @@ def load_and_save_to_memmap(
                     "shape": arr.shape,
                     "dtype": str(np.float32),
                     "subdir": subdir,
-                    "open_timestamp_s_start": group["open_timestamp_s"].iloc[0],
+                    "open_timestamp_s_start": int(group["open_timestamp_s"].iloc[0]),
+                    "open_timestamp_s_end": int(group["open_timestamp_s"].iloc[-1]),
                     "symbol": symbol,
-                    "type": type,
+                    "type": type_str,
                     "interval": interval,
                 }
                 del arr
@@ -130,7 +169,7 @@ def test(input_dir):
 
 
 def main():
-    output_dir = "memmap_dataset"
+    output_dir = "memmap_dataset2"
 
     # Load data from Hugging Face and save to memmap
     load_and_save_to_memmap("adamzzzz/binance-klines-20240721", output_dir, split_date="2024-04-01")
