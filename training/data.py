@@ -8,7 +8,7 @@ from datetime import datetime
 
 import numpy as np
 import torch
-from torch.utils.data import IterableDataset
+from torch.utils.data import DataLoader, IterableDataset
 
 
 class Timer:
@@ -141,7 +141,7 @@ class OHLCDatasetMmap(IterableDataset):
 
         ohlcv = torch.tensor(arr[start:end, :4], dtype=torch.float32)
         timestamp_s = torch.tensor(arr[start:end, 5], dtype=torch.long)
-        timestamp_start = datetime.fromtimestamp(timestamp_s[0].item())
+        timestamp_s_start = datetime.fromtimestamp(timestamp_s[0].item())
 
         # ohlcv = torch.zeros((actual_length, 4), dtype=torch.float32)
         # ohlcv[:actual_length, 0] = torch.tensor(arr[start:end, 0], dtype=torch.float32)
@@ -158,7 +158,7 @@ class OHLCDatasetMmap(IterableDataset):
             "bar_start": start,
             "bar_end": end,
             "timestamp_s": timestamp_s,
-            "timestamp_s_start": timestamp_start,
+            "timestamp_s_start": timestamp_s_start,
             "index": index,
             "seq_len": actual_length,
         }
@@ -208,7 +208,7 @@ class OHLCDatasetMmap(IterableDataset):
             "seq_len": [item["seq_len"] for item in batch],
             "type": [item["type"] for item in batch],
             "interval": [item["interval"] for item in batch],
-            "timestamp_start": [item["timestamp_start"] for item in batch],
+            "timestamp_s_start": [item["timestamp_s_start"] for item in batch],
             "inputs": stacked_inputs,
             "attention_mask": stacked_attention_masks,
             "index": [item["index"] for item in batch],
@@ -248,16 +248,6 @@ def preview_size():
 
 if __name__ == "__main__":
     # preview_size()
-    dataset = OHLCDatasetMmap(
-        "memmap_dataset",
-        window_range=(400, 400),
-        is_train=True,
-        filter_intervals="1h",
-        filter_symbols=["BTCUSDT", "ETHUSDT"],
-        filter_types="um",
-    )
-
-    print("dataset at 200: ", dataset[200])
     # for i in range(8):
     #     dataset = OHLCDatasetMmap(
     #         "memmap_dataset", window_range=(1600, 4096), is_train=True, rank=i, world_size=8, filter_intervals='1h', filter_types='spot'
@@ -270,26 +260,26 @@ if __name__ == "__main__":
     #     max_index = max(*data["index"], max_index)
     #     min_index = min(min_index, *data["index"])
     # print(min_index, max_index)
-    # for i in range(8):
-    #     val_dataset = OHLCDatasetMmap(
-    #         "memmap_dataset",
-    #         window_range=(1600, 4096),
-    #         is_train=False,
-    #         first_n=10_00,
-    #         sample_n=10000,
-    #         rank=i,
-    #         world_size=8,
-    #     )
-    #     len_val = len(val_dataset)
-    #     val_loader = DataLoader(
-    #         val_dataset, batch_size=16, num_workers=8, collate_fn=val_dataset.collate_fn
-    #     )
-    #     min_index = 1e12
-    #     max_index = 0
-    #     print("rank ", str(i), "len val_loader ", len(val_loader))
-    #     for i, data in enumerate(val_loader):
-    #         max_index = max(*data["index"], max_index)
-    #         min_index = min(min_index, *data["index"])
-    #         if i > 100000:
-    #             break
-    #     print(min_index, max_index)
+    for i in range(8):
+        val_dataset = OHLCDatasetMmap(
+            "memmap_dataset",
+            window_range=(1600, 4096),
+            is_train=False,
+            first_n=10_00,
+            sample_n=10000,
+            rank=i,
+            world_size=8,
+        )
+        len_val = len(val_dataset)
+        val_loader = DataLoader(
+            val_dataset, batch_size=16, num_workers=8, collate_fn=val_dataset.collate_fn
+        )
+        min_index = 1e12
+        max_index = 0
+        print("rank ", str(i), "len val_loader ", len(val_loader))
+        for i, data in enumerate(val_loader):
+            max_index = max(*data["index"], max_index)
+            min_index = min(min_index, *data["index"])
+            if i > 100000:
+                break
+        print(min_index, max_index)

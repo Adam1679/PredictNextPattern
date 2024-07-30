@@ -17,7 +17,7 @@ test:
  filter_intervals: 0.0
 
 logging: 
- log_interval: 10
+ log_interval: 1
  wandb_enabled: True
  wandb_project: cpt
  wandb_run_name: '28M_1h_spot_bsz256'
