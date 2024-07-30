@@ -1,1 +1,1 @@
-deepspeed --num_nodes 1 --num_gpus=8 training/trainer_ds.py --profile profile/llama_24M_1h_spot_bsz256
+deepspeed --num_nodes 1 --num_gpus=8 training/trainer_ds.py
