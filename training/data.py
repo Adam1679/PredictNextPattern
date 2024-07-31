@@ -4,13 +4,17 @@ import os
 import random
 import time
 from bisect import bisect_right
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, IterableDataset
 
-from training.plotting import plot_ohlc_candlestick_with_volume
+from training.plotting import (
+    plot_ohlc_candlestick_with_volume,
+    plot_ohlc_candlestick_with_volume_and_prediction,
+)
 
 
 class Timer:
@@ -81,15 +85,19 @@ class OHLCDatasetMmap(IterableDataset):
             self.split_file_metas.sort(key=lambda x: x[0])
             if filter_symbols:
                 self.split_file_metas = [
-                    (k, v) for k, v in self.split_file_metas if k.split("_")[1] in filter_symbols
+                    (k, meta)
+                    for k, meta in self.split_file_metas
+                    if meta["symbol"] in filter_symbols
                 ]
             if filter_types:
                 self.split_file_metas = [
-                    (k, v) for k, v in self.split_file_metas if k.split("_")[2] in filter_types
+                    (k, meta) for k, meta in self.split_file_metas if meta["type"] in filter_types
                 ]
             if filter_intervals:
                 self.split_file_metas = [
-                    (k, v) for k, v in self.split_file_metas if k.split("_")[3] in filter_intervals
+                    (k, meta)
+                    for k, meta in self.split_file_metas
+                    if meta["interval"] in filter_intervals
                 ]
             self.prefix_sum = [0]
             for _, meta in self.split_file_metas:
@@ -105,7 +113,7 @@ class OHLCDatasetMmap(IterableDataset):
 
     def __len__(self):
         if self.sample_n:
-            return self.sample_n
+            return min(self.end - self.start, self.sample_n)
         return self.end - self.start
 
     def __iter__(self):
@@ -235,16 +243,19 @@ class OHLCDatasetMmap(IterableDataset):
 
     def plot_kline(self, index, output_file=""):
         item = self.__getitem__(index)
+        self.plot_kline_with_prediction(item, output_file=output_file)
+
+    def plot_kline_with_prediction(
+        self, item, prediction: Optional[np.ndarray] = None, output_file=""
+    ):
         symbol = item["symbol"]
         volume = item["volume"].numpy()
         interval = item["interval"]
-        item["type"]
-        price = item["inputs"]
-        if self.normalize:
-            price = self.unnormalize(price)
-
-        # structure the data
-        price = price.numpy()
+        price = item["inputs"].numpy()  # (seq_len, 4)
+        if prediction is not None:
+            assert len(price) == len(prediction)
+            if prediction.ndim == 2:
+                prediction = prediction[:, 3]  # close price
         data_as_list_of_dict = [
             {
                 "timestamp_s": item["timestamp_s_start"] + i * INTERVAL_TO_SECONDS[interval],
@@ -258,9 +269,24 @@ class OHLCDatasetMmap(IterableDataset):
         ]
         df = pd.DataFrame(data_as_list_of_dict)
         df["date"] = pd.to_datetime(df["timestamp_s"], unit="s")
-        plot_ohlc_candlestick_with_volume(
-            df, output_filename=output_file, symbol=symbol, interval=interval
-        )
+        if prediction is not None:
+            prediction = prediction.to(torch.float32).numpy()
+            prediction_as_list_of_dict = [
+                {
+                    "timestamp_s": item["timestamp_s_start"] + i * INTERVAL_TO_SECONDS[interval],
+                    "predicted_price": prediction[i],
+                }
+                for i in range(price.shape[0])
+            ]
+            pred_df = pd.DataFrame(prediction_as_list_of_dict)
+            pred_df["date"] = pd.to_datetime(pred_df["timestamp_s"], unit="s")
+            plot_ohlc_candlestick_with_volume_and_prediction(
+                df, pred_df, output_filename=output_file, symbol=symbol, interval=interval
+            )
+        else:
+            plot_ohlc_candlestick_with_volume(
+                df, output_filename=output_file, symbol=symbol, interval=interval
+            )
 
 
 def preview_size():

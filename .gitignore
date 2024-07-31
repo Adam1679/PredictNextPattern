@@ -42,3 +42,4 @@ checkpoints
 profile
 memmap_dataset
 memmap_dataset2
+*.html

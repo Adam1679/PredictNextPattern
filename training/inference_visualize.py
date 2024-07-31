@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from collections import defaultdict
+from datetime import datetime
 
 import torch
 import torch.nn as nn
@@ -127,6 +128,29 @@ def load_config(config_path):
     return config
 
 
+@torch.inference_mode()
+def inference_one(model, all_in_one_config, symbol, interval, index):
+    valset = OHLCDatasetMmap(
+        all_in_one_config["data"]["data_root"],
+        window_range=(1024, 1024),
+        is_train=False,
+        filter_symbols=[symbol],
+        filter_intervals=[interval],
+    )
+    assert len(valset) > index, f"Index {index} out of range"
+    clip = valset.clip
+    item = valset[index]
+    inputs = torch.clamp_(item["inputs"], clip[0], clip[1])
+    inputs = item["inputs"].unsqueeze(0).to(DEVICE).to(torch.bfloat16)  # (1, seq_len, input_size)
+    timestamp_s_iso = datetime.fromtimestamp(item["timestamp_s_start"]).strftime(
+        "%Y-%m-%d_%H:%M:%S"
+    )
+    prediction = model(inputs=inputs)  # (1, seq_len, output_size)
+    prediction = prediction.squeeze(0).cpu().to(torch.float32)
+    output_file = f"{symbol}_{interval}_{timestamp_s_iso}.html"
+    valset.plot_kline_with_prediction(item=item, prediction=prediction, output_file=output_file)
+
+
 def get_args():
     import argparse
 
@@ -135,6 +159,10 @@ def get_args():
     parser.add_argument("--world_size", type=int, default=1)
     parser.add_argument("--config", type=str, default="training/config.yaml")
     parser.add_argument("--ckpt", type=str, default="")
+    parser.add_argument("--symbol", type=str, default=None)
+    parser.add_argument("--interval", type=str, default=None)
+    parser.add_argument("--test_index", type=int, default=None)
+    parser.add_argument("--validate", action="store_true")
     return parser.parse_args()
 
 
@@ -151,14 +179,17 @@ def main():
         ckpt, tag = os.path.split(args.ckpt)
         state = get_fp32_state_dict_from_zero_checkpoint(ckpt, tag=tag)
         model = torch.compile(model)
-        # new_state = {k[10:]: v for k, v in state.items()}
         model.load_state_dict(state)
         model.eval()
         print_master(f"Number of parameters: {model.num_parameters():,}")
+    if args.validate:
+        val_metrics = validate(model, all_in_one_config)
+        print_master(val_metrics)
+    if args.test_index is not None:
+        assert args.symbol is not None, "Symbol must be provided"
+        assert args.interval is not None, "Interval must be provided"
 
-    val_metrics = validate(model, all_in_one_config)
-    print_master(val_metrics)
-    return
+        inference_one(model, all_in_one_config, args.symbol, args.interval, args.test_index)
 
 
 if __name__ == "__main__":

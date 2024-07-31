@@ -1,0 +1,1 @@
+python training/inference_visualize.py --ckpt=/home/adamzhang/PredictNextPattern/checkpoints/28M_1h_spot_bsz256/global_step8000 --test_index 1000 --symbol ETHUSDT --interval 1h

@@ -129,9 +129,11 @@ def plot_ohlc_candlestick_with_volume_and_prediction(
 
     # Process predicted data
     pred_df = pd.DataFrame(predicted_data)
+    assert (
+        "predicted_price" in pred_df.columns
+    ), "predicted_data must contain 'predicted_price' column but have {}".format(pred_df.columns)
     pred_df["date"] = pd.to_datetime(pred_df["date"])
     pred_df = pred_df.sort_values("date")
-
     # Calculate the width of each bar
     time_diff = df["date"].diff().min()
     w = time_diff.total_seconds() * 1000 * 0.8  # 80% of the minimum time difference
