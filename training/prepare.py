@@ -67,19 +67,6 @@ def load_and_save_to_memmap(
         ):
             # Sort by timestamp
             group = group.sort_values("open_timestamp")
-            # # Create a complete date range
-            # start_time = group["open_timestamp"].min()
-            # end_time = group["open_timestamp"].max()
-            # complete_range = pd.date_range(
-            #     start=start_time, end=end_time, freq=INTERVAL_TO_TIMEDELT[interval]
-            # )
-
-            # # Reindex the group with the complete range and forward fill
-            # filled_group = group.set_index("open_timestamp").reindex(complete_range)
-            # # Mark missing data
-            # filled_group["missing"] = filled_group["missing"].isna()
-            # group = group.ffill().reset_index()
-
             # Check if all required columns exist
             min_timestamp = group["open_timestamp_s"].iloc[0]
             max_timestamp = group["open_timestamp_s"].iloc[-1]
@@ -91,17 +78,15 @@ def load_and_save_to_memmap(
             for is_train in [True, False]:
 
                 if is_train:
-                    data_selected = group.loc[
-                        group.open_timestamp_s <= train_split_timestamp_s, columns
-                    ]
+                    data_selected = group.loc[group.open_timestamp_s <= train_split_timestamp_s]
                 else:
-                    data_selected = group.loc[
-                        group.open_timestamp_s > train_split_timestamp_s, columns
-                    ]
+                    data_selected = group.loc[group.open_timestamp_s > train_split_timestamp_s]
                 if data_selected.shape[0] == 0:
                     # print("No data for {}_{}_{}_{}. date range {} to {}".format(split_name, symbol, type_str, interval, group.open_timestamp.min(), group.open_timestamp.max()))
                     continue
-                arr = np.array(data_selected.values, dtype=np.float32)  # (n_samples, n_features)
+                arr = np.array(
+                    data_selected[columns].values, dtype=np.float32
+                )  # (n_samples, n_features)
                 subdir = "train" if is_train else "test"
                 split_key = f"{split_name}_{symbol}_{type_str}_{interval}_{subdir}"
                 file_name = f"{split_key}.dat"
@@ -120,8 +105,8 @@ def load_and_save_to_memmap(
                     "shape": arr.shape,
                     "dtype": str(np.float32),
                     "subdir": subdir,
-                    "open_timestamp_s_start": int(group["open_timestamp_s"].iloc[0]),
-                    "open_timestamp_s_end": int(group["open_timestamp_s"].iloc[-1]),
+                    "open_timestamp_s_start": int(data_selected["open_timestamp_s"].iloc[0]),
+                    "open_timestamp_s_end": int(data_selected["open_timestamp_s"].iloc[-1]),
                     "symbol": symbol,
                     "type": type_str,
                     "interval": interval,

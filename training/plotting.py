@@ -18,7 +18,7 @@ def plot_ohlc_candlestick_with_volume(data, symbol="", interval="", output_filen
 
     df["change"] = df["close"] - df["open"]
     df["color"] = [
-        "#D5E1DD" if close > open else "#F2583E" for close, open in zip(df["close"], df["open"])
+        "limegreen" if close > open else "red" for close, open in zip(df["close"], df["open"])
     ]
 
     # Calculate the width of each bar
@@ -123,8 +123,11 @@ def plot_ohlc_candlestick_with_volume_and_prediction(
     df = df.sort_values("date")
 
     df["change"] = df["close"] - df["open"]
+    # df["color"] = [
+    #     "#D5E1DD" if close > open else "#F2583E" for close, open in zip(df["close"], df["open"])
+    # ]
     df["color"] = [
-        "#D5E1DD" if close > open else "#F2583E" for close, open in zip(df["close"], df["open"])
+        "limegreen" if close > open else "red" for close, open in zip(df["close"], df["open"])
     ]
 
     # Process predicted data

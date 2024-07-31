@@ -3,6 +3,7 @@ import logging
 import os
 from collections import defaultdict
 from datetime import datetime
+from itertools import product
 
 import torch
 import torch.nn as nn
@@ -129,15 +130,20 @@ def load_config(config_path):
 
 
 @torch.inference_mode()
-def inference_one(model, all_in_one_config, symbol, interval, index):
+def inference_one(model, all_in_one_config, symbol, interval, index, type_str):
     valset = OHLCDatasetMmap(
         all_in_one_config["data"]["data_root"],
         window_range=(1024, 1024),
         is_train=False,
         filter_symbols=[symbol],
         filter_intervals=[interval],
+        filter_types=[type_str],
     )
-    assert len(valset) > index, f"Index {index} out of range"
+    if len(valset) <= index:
+        logging.error(
+            f"{symbol} {interval} {type_str} Index {index} out of range. Only has {len(valset)}"
+        )
+        return
     clip = valset.clip
     item = valset[index]
     inputs = torch.clamp_(item["inputs"], clip[0], clip[1])
@@ -161,8 +167,9 @@ def get_args():
     parser.add_argument("--ckpt", type=str, default="")
     parser.add_argument("--symbol", type=str, default=None)
     parser.add_argument("--interval", type=str, default=None)
-    parser.add_argument("--test_index", type=int, default=None)
+    parser.add_argument("--test_index", type=str, default=None)
     parser.add_argument("--validate", action="store_true")
+    parser.add_argument("--type", type=str, default=None)
     return parser.parse_args()
 
 
@@ -188,8 +195,12 @@ def main():
     if args.test_index is not None:
         assert args.symbol is not None, "Symbol must be provided"
         assert args.interval is not None, "Interval must be provided"
-
-        inference_one(model, all_in_one_config, args.symbol, args.interval, args.test_index)
+        indexs = args.test_index.split(",")
+        symbols = args.symbol.split(",")
+        intervals = args.interval.split(",")
+        types = args.type.split(",")
+        for test_index, symbol, interval, type_str in product(indexs, symbols, intervals, types):
+            inference_one(model, all_in_one_config, symbol, interval, int(test_index), type_str)
 
 
 if __name__ == "__main__":
