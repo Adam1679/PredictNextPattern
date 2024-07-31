@@ -15,10 +15,11 @@ def evaluation_metrics_single(predictions, labels, mask):
     mse = ((valid_predictions - valid_labels) ** 2).sum(dim=1) / mask.sum(dim=1)
 
     # Calculate the relative change
-    # pred_relative_change = (predictions[:, 1:] - predictions[:, :-1]) / (predictions[:, :-1] + 1e-8)
-    # label_relative_change = (labels[:, 1:] - labels[:, :-1]) / (labels[:, :-1] + 1e-8)
-    pred_relative_change = predictions[:, 1:]
-    label_relative_change = labels[:, 1:]
+    pred_relative_change = (predictions[:, 1:] - predictions[:, :-1]) / (predictions[:, :-1] + 1e-8)
+    label_relative_change = (labels[:, 1:] - labels[:, :-1]) / (labels[:, :-1] + 1e-8)
+
+    # pred_relative_change = predictions[:, 1:]
+    # label_relative_change = labels[:, 1:]
 
     # Apply mask to relative changes (exclude the first time step)
     mask_relative = mask[:, 1:]
@@ -26,10 +27,10 @@ def evaluation_metrics_single(predictions, labels, mask):
     label_relative_change = label_relative_change * mask_relative
 
     # Calculate binary predictions and labels based on relative change
-    pred_up = (pred_relative_change > 2e-4).to(dtype)
-    pred_down = (pred_relative_change < -2e-4).to(dtype)
-    label_up = (label_relative_change > 2e-4).to(dtype)
-    label_down = (label_relative_change < -2e-4).to(dtype)
+    pred_up = (pred_relative_change > 0).to(dtype)
+    pred_down = (pred_relative_change < 0).to(dtype)
+    label_up = (label_relative_change > 0).to(dtype)
+    label_down = (label_relative_change < 0).to(dtype)
 
     # Calculate True Positives (TP), False Positives (FP), False Negatives (FN) for both up and down
     TP_up = (pred_up * label_up * mask_relative).sum(dim=1)
