@@ -15,8 +15,10 @@ def evaluation_metrics_single(predictions, labels, mask):
     mse = ((valid_predictions - valid_labels) ** 2).sum(dim=1) / mask.sum(dim=1)
 
     # Calculate the relative change
-    pred_relative_change = (predictions[:, 1:] - predictions[:, :-1]) / (predictions[:, :-1] + 1e-8)
-    label_relative_change = (labels[:, 1:] - labels[:, :-1]) / (labels[:, :-1] + 1e-8)
+    # pred_relative_change = (predictions[:, 1:] - predictions[:, :-1]) / (predictions[:, :-1] + 1e-8)
+    # label_relative_change = (labels[:, 1:] - labels[:, :-1]) / (labels[:, :-1] + 1e-8)
+    pred_relative_change = predictions[:, 1:]
+    label_relative_change = labels[:, 1:]
 
     # Apply mask to relative changes (exclude the first time step)
     mask_relative = mask[:, 1:]

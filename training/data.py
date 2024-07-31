@@ -54,7 +54,7 @@ class OHLCDatasetMmap(IterableDataset):
         sample_n=None,
         rank=0,
         world_size=1,
-        clip=(-1, 1),
+        clip=(-50, 50),
         normalize_rescale_price=True,
     ):
         self.window_range = window_range
@@ -138,10 +138,18 @@ class OHLCDatasetMmap(IterableDataset):
 
     def normalize_rescale(self, ohlcv):
         # ohlcv = torch.log(ohlcv / (ohlcv[0] + 1e-12))
-        open_price = ohlcv[0, 0]
-        ohlcv = (ohlcv / (open_price + 1e-12) - 1) * 100
-        ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
-        return ohlcv
+        # ohlcv: (seq_len, 4)
+        normalize_on_open = True
+        if normalize_on_open:
+            open_price = ohlcv[0, 0]
+            ohlcv = ohlcv / (open_price + 1e-12) - 1
+            ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
+            return ohlcv
+        else:
+            open_price = ohlcv[:, :1]
+            ohlcv = ohlcv / (open_price + 1e-12) - 1
+            ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
+            return ohlcv
 
     def __getitem__(self, index):
         bin_idx = bisect_right(self.prefix_sum, index) - 1
@@ -225,7 +233,7 @@ class OHLCDatasetMmap(IterableDataset):
         stacked_inputs = torch.stack(padded_inputs)
         stacked_attention_masks = torch.stack(attention_masks)
         if self.clip:
-            stacked_inputs = torch.clamp(stacked_inputs, self.clip[0] * 100, self.clip[1] * 100)
+            stacked_inputs = torch.clamp(stacked_inputs, self.clip[0], self.clip[1])
         batched_inputs = {
             "symbol": [item["symbol"] for item in batch],
             "seq_len": [item["seq_len"] for item in batch],
@@ -257,15 +265,16 @@ class OHLCDatasetMmap(IterableDataset):
         data_as_list_of_dict = [
             {
                 "timestamp_s": item["timestamp_s_start"] + i * INTERVAL_TO_SECONDS[interval],
-                "open": normalized_price[i, 3],
+                "open": normalized_price[i, 0],
                 "high": normalized_price[i, 1],
                 "low": normalized_price[i, 2],
-                "close": normalized_price[i, 0],
+                "close": normalized_price[i, 3],
                 "volume": volume[i],
             }
             for i in range(normalized_price.shape[0])
         ]
         df = pd.DataFrame(data_as_list_of_dict)
+        breakpoint()
         df["date"] = pd.to_datetime(df["timestamp_s"], unit="s")
         if prediction is not None:
             prediction = prediction.to(torch.float32).numpy()
@@ -300,5 +309,13 @@ def preview_size():
     pass
 
 
+def sample_kiline():
+    dataset = OHLCDatasetMmap(
+        "memmap_dataset", window_range=(128, 512), is_train=True, filter_intervals="1h"
+    )
+    dataset.plot_kline(100, "test.html")
+
+
 if __name__ == "__main__":
-    preview_size()
+    # preview_size()
+    sample_kiline()

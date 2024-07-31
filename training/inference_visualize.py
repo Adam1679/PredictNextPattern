@@ -198,7 +198,7 @@ def get_args():
     parser.add_argument("--test_index", type=str, default=None)
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--type", type=str, default=None)
-    parser.add_argument("--observation", type=int, default=0)
+    parser.add_argument("--observation_length", type=int, default=0)
     return parser.parse_args()
 
 
