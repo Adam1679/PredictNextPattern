@@ -1,11 +1,11 @@
 data: 
  data_root: memmap_dataset
  max_seq_len: &seq_len 2048
- min_seq_len: 1024
+ min_seq_len: 128
  num_workers: 4
  filter_symbols: null
  filter_intervals: '1h'
- filter_types: 'spot'
+ filter_types: null
 model: 
   # !inc training/configs/llama_124M.yaml
   !inc training/configs/llama_28M.yaml
@@ -20,19 +20,19 @@ logging:
  log_interval: 10
  wandb_enabled: True
  wandb_project: cpt
- wandb_run_name: '28M_1h_spot_bsz256'
+ wandb_run_name: '28M_1h_bsz128'
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 
- batch_size: &bsz 256
- total_steps: &steps 20000
+ batch_size: &bsz 128
+ total_steps: &steps 6666
  lr: 0.001
  min_lr: 0.0001
  weight_decay: 0.01
- warmup_steps: 1000
+ warmup_steps: 100
 
 validation: 
- interval: 500
+ interval: 100
  sample_n: 20000
  batch_size: *bsz
  filter_symbols: null

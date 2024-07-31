@@ -40,10 +40,17 @@ def evaluation_metrics_single(predictions, labels, mask):
 
     # Calculate precision and recall for each direction
     precision_up = TP_up / (TP_up + FP_up + 1e-8)
+    precision_up[TP_up + FP_up == 0] = 0
+    precision_up = precision_up.mean()
+
     recall_up = TP_up / (TP_up + FN_up + 1e-8)
+    recall_up[TP_up + FN_up == 0] = 0
+    recall_up = recall_up.mean()
 
     precision_down = TP_down / (TP_down + FP_down + 1e-8)
     recall_down = TP_down / (TP_down + FN_down + 1e-8)
+    precision_down[TP_down + FP_down == 0] = 0
+    recall_down[TP_down + FN_down == 0] = 0
 
     # Calculate symmetric precision and recall
     precision = (precision_up + precision_down) / 2
@@ -59,12 +66,20 @@ def evaluation_metrics_single(predictions, labels, mask):
     if dist.is_initialized():
         dist.all_reduce(recall, op=dist.ReduceOp.AVG)
         dist.all_reduce(precision, op=dist.ReduceOp.AVG)
+        dist.all_reduce(precision_up, op=dist.ReduceOp.AVG)
+        dist.all_reduce(precision_down, op=dist.ReduceOp.AVG)
+        dist.all_reduce(recall_up, op=dist.ReduceOp.AVG)
+        dist.all_reduce(recall_down, op=dist.ReduceOp.AVG)
         dist.all_reduce(f1, op=dist.ReduceOp.AVG)
         dist.all_reduce(mae, op=dist.ReduceOp.AVG)
         dist.all_reduce(mse, op=dist.ReduceOp.AVG)
 
-    avg_recall = recall.mean()
     avg_precision = precision.mean()
+    avg_recall = recall.mean()
+    avg_recall_up = recall_up.mean()
+    avg_recall_down = recall_down.mean()
+    avg_precision_up = precision_up.mean()
+    avg_precision_down = precision_down.mean()
     avg_f1 = f1.mean()
     avg_mae = mae.mean()
     avg_mse = mse.mean()
@@ -74,6 +89,10 @@ def evaluation_metrics_single(predictions, labels, mask):
         "mse": round(avg_mse.item(), 2),
         "recall": round(avg_recall.item(), 2),
         "precision": round(avg_precision.item(), 2),
+        "precision_up": round(avg_precision_up.item(), 2),
+        "precision_down": round(avg_precision_down.item(), 2),
+        "recall_up": round(avg_recall_up.item(), 2),
+        "recall_down": round(avg_recall_down.item(), 2),
         "f1": round(avg_f1.item(), 2),
     }
     return metrics

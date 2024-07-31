@@ -101,6 +101,7 @@ def train(
     sum_global_norm = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     total_tokens = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     model_dtype = next(model.parameters()).dtype
+    global_total_tokens = 0
     for step, batch in enumerate(train_dataloader):
         t0 = time.time()
         for param_group in optimizer.param_groups:
@@ -145,6 +146,7 @@ def train(
             dist.all_reduce(sum_global_norm, op=dist.ReduceOp.AVG)
             dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
             tokens_per_step = total_tokens.item() / all_in_one_config["logging"]["log_interval"]
+            global_total_tokens += total_tokens.item()
             stats.update(
                 {
                     "train/global_step": step,
@@ -154,6 +156,7 @@ def train(
                     "train/time_per_step": round(dt, 4),
                     "train/tokens_per_sec": int(tokens_per_step / dt),
                     "train/eta(hour)": round(eta / 3600, 2),
+                    "train/consumed_tokens": int(global_total_tokens),
                 }
             )
 

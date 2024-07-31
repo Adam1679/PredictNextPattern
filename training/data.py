@@ -9,7 +9,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import IterableDataset
 
 from training.plotting import (
     plot_ohlc_candlestick_with_volume,
@@ -287,40 +287,18 @@ class OHLCDatasetMmap(IterableDataset):
             )
 
 
-if __name__ == "__main__":
-    # preview_size()
-    # for i in range(8):
-    #     dataset = OHLCDatasetMmap(
-    #         "memmap_dataset", window_range=(1600, 4096), is_train=True, rank=i, world_size=8, filter_intervals='1h', filter_types='spot'
+def preview_size():
+    # dataset = OHLCDatasetMmap(
+    #         "memmap_dataset", window_range=(1600, 4096), is_train=True, filter_intervals='1h', filter_types='spot'
     #     )
-    #     print("rank ", str(i), "len dataset ", len(dataset))
-    #     min_index = 1e10
-    #     max_index = 0
-    #     dataloader = DataLoader(dataset, batch_size=16, num_workers=8, collate_fn=dataset.collate_fn)
-    # for i, data in enumerate(dataloader):
-    #     max_index = max(*data["index"], max_index)
-    #     min_index = min(min_index, *data["index"])
-    # print(min_index, max_index)
-    for i in range(8):
-        val_dataset = OHLCDatasetMmap(
-            "memmap_dataset",
-            window_range=(1600, 4096),
-            is_train=False,
-            first_n=10_00,
-            sample_n=10000,
-            rank=i,
-            world_size=8,
-        )
-        len_val = len(val_dataset)
-        val_loader = DataLoader(
-            val_dataset, batch_size=16, num_workers=8, collate_fn=val_dataset.collate_fn
-        )
-        min_index = 1e12
-        max_index = 0
-        print("rank ", str(i), "len val_loader ", len(val_loader))
-        for i, data in enumerate(val_loader):
-            max_index = max(*data["index"], max_index)
-            min_index = min(min_index, *data["index"])
-            if i > 100000:
-                break
-        print(min_index, max_index)
+    # print("len dataset ", len(dataset)) # 10599248
+
+    # dataset = OHLCDatasetMmap(
+    #         "memmap_dataset", window_range=(1600, 4096), is_train=True, filter_intervals='1h'
+    #     )
+    # print("len dataset ", len(dataset)) # 15253874
+    pass
+
+
+if __name__ == "__main__":
+    preview_size()
