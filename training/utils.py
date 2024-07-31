@@ -10,62 +10,71 @@ def evaluation_metrics_single(predictions, labels, mask):
     mask = mask.to(dtype)
     valid_predictions = predictions * mask
     valid_labels = labels * mask
-    mean_pred = (valid_predictions.sum(dim=1) / mask.sum(dim=1)).unsqueeze(1)
-    mean_label = (valid_labels.sum(dim=1) / mask.sum(dim=1)).unsqueeze(1)
-
-    # Center the data by subtracting the mean
-    pred_centered = (valid_predictions - mean_pred) * mask
-    label_centered = (valid_labels - mean_label) * mask
-
-    # Compute covariance and standard deviations
-    covariance = (pred_centered * label_centered).sum(dim=1)
-    pred_std = torch.sqrt((pred_centered**2).sum(dim=1))
-    label_std = torch.sqrt((label_centered**2).sum(dim=1))
-
-    # Compute Pearson correlation coefficient for each example
-    pearson_correlation = covariance / (pred_std * label_std + 1e-12)
-
-    # Average the Pearson correlation over the batch dimension
 
     mae = torch.abs(valid_predictions - valid_labels).sum(dim=1) / mask.sum(dim=1)
     mse = ((valid_predictions - valid_labels) ** 2).sum(dim=1) / mask.sum(dim=1)
 
-    # calculate the accuracy
-    # Apply mask and get binary predictions (threshold at 0.5)
-    binary_predictions = (predictions >= 0).to(dtype) * mask
-    binary_labels = (labels >= 0).to(dtype) * mask
-    # Calculate True Positives (TP), False Positives (FP), False Negatives (FN)
-    TP = (binary_predictions * binary_labels * mask).sum(dim=1)
-    FP = (binary_predictions * (1 - binary_labels) * mask).sum(dim=1)
-    FN = ((1 - binary_predictions) * binary_labels * mask).sum(dim=1)
+    # Calculate the relative change
+    pred_relative_change = (predictions[:, 1:] - predictions[:, :-1]) / (predictions[:, :-1] + 1e-8)
+    label_relative_change = (labels[:, 1:] - labels[:, :-1]) / (labels[:, :-1] + 1e-8)
 
-    # Calculate precision and recall for each example
-    precision = TP / (TP + FP + 1e-8)  # Adding small value to avoid division by zero
-    recall = TP / (TP + FN + 1e-8)
+    # Apply mask to relative changes (exclude the first time step)
+    mask_relative = mask[:, 1:]
+    pred_relative_change = pred_relative_change * mask_relative
+    label_relative_change = label_relative_change * mask_relative
+
+    # Calculate binary predictions and labels based on relative change
+    pred_up = (pred_relative_change > 2e-4).to(dtype)
+    pred_down = (pred_relative_change < -2e-4).to(dtype)
+    label_up = (label_relative_change > 2e-4).to(dtype)
+    label_down = (label_relative_change < -2e-4).to(dtype)
+
+    # Calculate True Positives (TP), False Positives (FP), False Negatives (FN) for both up and down
+    TP_up = (pred_up * label_up * mask_relative).sum(dim=1)
+    FP_up = (pred_up * label_down * mask_relative).sum(dim=1)
+    FN_up = (pred_down * label_up * mask_relative).sum(dim=1)
+
+    TP_down = (pred_down * label_down * mask_relative).sum(dim=1)
+    FP_down = (pred_down * label_up * mask_relative).sum(dim=1)
+    FN_down = (pred_up * label_down * mask_relative).sum(dim=1)
+
+    # Calculate precision and recall for each direction
+    precision_up = TP_up / (TP_up + FP_up + 1e-8)
+    recall_up = TP_up / (TP_up + FN_up + 1e-8)
+
+    precision_down = TP_down / (TP_down + FP_down + 1e-8)
+    recall_down = TP_down / (TP_down + FN_down + 1e-8)
+
+    # Calculate symmetric precision and recall
+    precision = (precision_up + precision_down) / 2
+    recall = (recall_up + recall_down) / 2
+
+    # Calculate F1 score
     f1 = 2 * precision * recall / (precision + recall + 1e-8)
-    # Handle cases where TP + FP or TP + FN is zero
-    precision[TP + FP == 0] = 0
-    recall[TP + FN == 0] = 0
+
+    # Handle cases where denominators are zero
+    precision[(TP_up + FP_up == 0) & (TP_down + FP_down == 0)] = 0
+    recall[(TP_up + FN_up == 0) & (TP_down + FN_down == 0)] = 0
+
     if dist.is_initialized():
         dist.all_reduce(recall, op=dist.ReduceOp.AVG)
         dist.all_reduce(precision, op=dist.ReduceOp.AVG)
         dist.all_reduce(f1, op=dist.ReduceOp.AVG)
-        dist.all_reduce(pearson_correlation, op=dist.ReduceOp.AVG)
         dist.all_reduce(mae, op=dist.ReduceOp.AVG)
         dist.all_reduce(mse, op=dist.ReduceOp.AVG)
+
     avg_recall = recall.mean()
     avg_precision = precision.mean()
     avg_f1 = f1.mean()
-    average_correlation = pearson_correlation.mean()
     avg_mae = mae.mean()
     avg_mse = mse.mean()
+
     metrics = {
-        "correlation/avg": round(average_correlation.item(), 2),
-        "mae/avg": round(avg_mae.item(), 2),
-        "mse/avg": round(avg_mse.item(), 2),
-        "recall/avg": round(avg_recall.item(), 2),
-        "precision/avg": round(avg_precision.item(), 2),
-        "f1/avg": round(avg_f1.item(), 2),
+        "mae": round(avg_mae.item(), 2),
+        "mse": round(avg_mse.item(), 2),
+        "recall": round(avg_recall.item(), 2),
+        "precision": round(avg_precision.item(), 2),
+        "f1": round(avg_f1.item(), 2),
     }
     return metrics
 

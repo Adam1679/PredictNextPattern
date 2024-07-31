@@ -244,14 +244,14 @@ class OHLCDatasetMmap(IterableDataset):
         self.plot_kline_with_prediction(item, output_file=output_file)
 
     def plot_kline_with_prediction(
-        self, item, prediction: Optional[np.ndarray] = None, output_file=""
+        self, item, prediction: Optional[np.ndarray] = None, output_file="", obersevation_length=0
     ):
         symbol = item["symbol"]
         volume = item["volume"].numpy()
         interval = item["interval"]
         normalized_price = item["inputs"].numpy()  # (seq_len, 4)
         if prediction is not None:
-            assert len(normalized_price) == len(prediction)
+            assert len(normalized_price) == len(prediction) + obersevation_length
             if prediction.ndim == 2:
                 prediction = prediction[:, 3]  # close price
         data_as_list_of_dict = [
@@ -272,9 +272,9 @@ class OHLCDatasetMmap(IterableDataset):
             prediction_as_list_of_dict = [
                 {
                     "timestamp_s": item["timestamp_s_start"] + i * INTERVAL_TO_SECONDS[interval],
-                    "predicted_price": prediction[i],
+                    "predicted_price": prediction[i - obersevation_length],
                 }
-                for i in range(normalized_price.shape[0])
+                for i in range(obersevation_length, normalized_price.shape[0])
             ]
             pred_df = pd.DataFrame(prediction_as_list_of_dict)
             pred_df["date"] = pd.to_datetime(pred_df["timestamp_s"], unit="s")

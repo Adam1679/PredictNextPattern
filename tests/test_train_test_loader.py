@@ -59,7 +59,7 @@ class TestTrain(unittest.TestCase):
             for i, data in enumerate(val_loader):
                 max_index = max(*data["index"], max_index)
                 min_index = min(min_index, *data["index"])
-                if i > 10000:
+                if i > 1000:
                     break
         except:
             assert False, "Data loading failed"

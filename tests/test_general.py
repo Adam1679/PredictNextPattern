@@ -43,12 +43,11 @@ class TestModelAndUtils(unittest.TestCase):
 
         metrics = evaluation_metrics_single(predictions, labels, mask)
 
-        self.assertIn("correlation/avg", metrics)
-        self.assertIn("mae/avg", metrics)
-        self.assertIn("mse/avg", metrics)
-        self.assertIn("recall/avg", metrics)
-        self.assertIn("precision/avg", metrics)
-        self.assertIn("f1/avg", metrics)
+        self.assertIn("mae", metrics)
+        self.assertIn("mse", metrics)
+        self.assertIn("recall", metrics)
+        self.assertIn("precision", metrics)
+        self.assertIn("f1", metrics)
 
     def test_evaluation_metrics(self):
         predictions = torch.randn(2, 3, 4)
@@ -57,10 +56,9 @@ class TestModelAndUtils(unittest.TestCase):
 
         metrics = evaluation_metrics(predictions, labels, mask)
 
-        self.assertIn("open/correlation/avg", metrics)
-        self.assertIn("high/mae/avg", metrics)
-        self.assertIn("low/mse/avg", metrics)
-        self.assertIn("close/recall/avg", metrics)
+        self.assertIn("high/mae", metrics)
+        self.assertIn("low/mse", metrics)
+        self.assertIn("close/recall", metrics)
 
     def test_get_lr(self):
         config = {

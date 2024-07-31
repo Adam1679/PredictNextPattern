@@ -130,15 +130,43 @@ def load_config(config_path):
 
 
 @torch.inference_mode()
-def inference_one(model, all_in_one_config, symbol, interval, index, type_str):
-    valset = OHLCDatasetMmap(
-        all_in_one_config["data"]["data_root"],
-        window_range=(1024, 1024),
-        is_train=False,
-        filter_symbols=[symbol],
-        filter_intervals=[interval],
-        filter_types=[type_str],
+def generate_visualize(model, valset, symbol, interval, index, type_str, observation_length):
+    if len(valset) <= index:
+        logging.error(
+            f"{symbol} {interval} {type_str} Index {index} out of range. Only has {len(valset)}"
+        )
+        return
+    clip = valset.clip
+    item = valset[index]
+    inputs = torch.clamp_(item["inputs"], clip[0], clip[1])
+    inputs = inputs.unsqueeze(0).to(DEVICE).to(torch.bfloat16)  # (1, seq_len, input_size)
+    timestamp_s_iso = datetime.fromtimestamp(item["timestamp_s_start"]).strftime(
+        "%Y-%m-%d_%H:%M:%S"
     )
+
+    # Partial observation
+    observed_inputs = inputs[:, :observation_length, :]
+
+    # Auto-regressive generation
+    generated_outputs = []
+    for i in range(observation_length, inputs.shape[1]):
+        prediction = model(inputs=observed_inputs)
+        last_prediction = prediction[:, -1:, :]  # (1, 1, output_size)
+        generated_outputs.append(last_prediction)
+        observed_inputs = torch.cat([observed_inputs, last_prediction], dim=1)
+
+    generated_outputs = torch.cat(generated_outputs, dim=1)
+    output_file = f"{symbol}_{interval}_{timestamp_s_iso}_generated.html"
+    valset.plot_kline_with_prediction(
+        item=item,
+        prediction=prediction,
+        output_file=output_file,
+        observation_length=observation_length,
+    )
+
+
+@torch.inference_mode()
+def inference_one(model, valset, symbol, interval, index, type_str):
     if len(valset) <= index:
         logging.error(
             f"{symbol} {interval} {type_str} Index {index} out of range. Only has {len(valset)}"
@@ -170,6 +198,7 @@ def get_args():
     parser.add_argument("--test_index", type=str, default=None)
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--type", type=str, default=None)
+    parser.add_argument("--observation", type=int, default=0)
     return parser.parse_args()
 
 
@@ -200,7 +229,28 @@ def main():
         intervals = args.interval.split(",")
         types = args.type.split(",")
         for test_index, symbol, interval, type_str in product(indexs, symbols, intervals, types):
-            inference_one(model, all_in_one_config, symbol, interval, int(test_index), type_str)
+            valset = OHLCDatasetMmap(
+                all_in_one_config["data"]["data_root"],
+                window_range=(
+                    all_in_one_config["data"]["max_seq_len"],
+                    all_in_one_config["data"]["max_seq_len"],
+                ),
+                is_train=False,
+                filter_symbols=[symbol],
+                filter_intervals=[interval],
+                filter_types=[type_str],
+            )
+            inference_one(model, valset, symbol, interval, int(test_index), type_str)
+            if args.observation_length:
+                generate_visualize(
+                    model,
+                    valset,
+                    symbol,
+                    interval,
+                    int(test_index),
+                    type_str,
+                    observation_length=args.observation_length,
+                )
 
 
 if __name__ == "__main__":
