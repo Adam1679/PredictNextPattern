@@ -55,7 +55,7 @@ class OHLCDatasetMmap(IterableDataset):
         rank=0,
         world_size=1,
         clip=(-1, 1),
-        normalize_price=True,
+        normalize_rescale_price=True,
     ):
         self.window_range = window_range
         self.rank = rank
@@ -68,7 +68,7 @@ class OHLCDatasetMmap(IterableDataset):
         self.random_seed = random_seed
         self.rng = random.Random(random_seed)
         self.clip = clip
-        self.normalize_price = normalize_price
+        self.normalize_rescale_price = normalize_rescale_price
         if not os.path.exists(os.path.join(data_root, "metadata.json")):
             raise ValueError("metadata.json not found in {}".format(data_root))
 
@@ -136,14 +136,11 @@ class OHLCDatasetMmap(IterableDataset):
             yield self.__getitem__(randint)
             i += 1
 
-    def normalize(self, ohlcv):
+    def normalize_rescale(self, ohlcv):
         # ohlcv = torch.log(ohlcv / (ohlcv[0] + 1e-12))
-        ohlcv = ohlcv / (ohlcv[0] + 1e-12) - 1
+        open_price = ohlcv[0, 0]
+        ohlcv = (ohlcv / (open_price + 1e-12) - 1) * 100
         ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
-        return ohlcv
-
-    def unnormalize(self, ohlcv):
-        ohlcv = (ohlcv / 100 + 1) * ohlcv[0]
         return ohlcv
 
     def __getitem__(self, index):
@@ -172,8 +169,9 @@ class OHLCDatasetMmap(IterableDataset):
         ohlcv[:actual_length, 3] = torch.tensor(arr[start:end, 3], dtype=torch.float32)
 
         volume = torch.tensor(arr[start:end, 4], dtype=torch.float32)
-        if self.normalize_price:
-            ohlcv = self.normalize(ohlcv)
+        if self.normalize_rescale_price:
+            ohlcv = self.normalize_rescale(ohlcv)
+
         return {
             "symbol": symbol,
             "type": type_str,
@@ -251,21 +249,21 @@ class OHLCDatasetMmap(IterableDataset):
         symbol = item["symbol"]
         volume = item["volume"].numpy()
         interval = item["interval"]
-        price = item["inputs"].numpy()  # (seq_len, 4)
+        normalized_price = item["inputs"].numpy()  # (seq_len, 4)
         if prediction is not None:
-            assert len(price) == len(prediction)
+            assert len(normalized_price) == len(prediction)
             if prediction.ndim == 2:
                 prediction = prediction[:, 3]  # close price
         data_as_list_of_dict = [
             {
                 "timestamp_s": item["timestamp_s_start"] + i * INTERVAL_TO_SECONDS[interval],
-                "open": price[i, 3],
-                "high": price[i, 1],
-                "low": price[i, 2],
-                "close": price[i, 0],
+                "open": normalized_price[i, 3],
+                "high": normalized_price[i, 1],
+                "low": normalized_price[i, 2],
+                "close": normalized_price[i, 0],
                 "volume": volume[i],
             }
-            for i in range(price.shape[0])
+            for i in range(normalized_price.shape[0])
         ]
         df = pd.DataFrame(data_as_list_of_dict)
         df["date"] = pd.to_datetime(df["timestamp_s"], unit="s")
@@ -276,7 +274,7 @@ class OHLCDatasetMmap(IterableDataset):
                     "timestamp_s": item["timestamp_s_start"] + i * INTERVAL_TO_SECONDS[interval],
                     "predicted_price": prediction[i],
                 }
-                for i in range(price.shape[0])
+                for i in range(normalized_price.shape[0])
             ]
             pred_df = pd.DataFrame(prediction_as_list_of_dict)
             pred_df["date"] = pd.to_datetime(pred_df["timestamp_s"], unit="s")
@@ -287,35 +285,6 @@ class OHLCDatasetMmap(IterableDataset):
             plot_ohlc_candlestick_with_volume(
                 df, output_filename=output_file, symbol=symbol, interval=interval
             )
-
-
-def preview_size():
-    dataset = OHLCDatasetMmap(
-        "memmap_dataset",
-        window_range=(1600, 4096),
-        is_train=True,
-        filter_intervals="1h",
-        filter_types="spot",
-    )
-    print("len dataset ", len(dataset))  # 10,599,248
-
-    dataset = OHLCDatasetMmap(
-        "memmap_dataset",
-        window_range=(1600, 4096),
-        is_train=True,
-        filter_intervals="30m",
-        filter_types="spot",
-    )
-    print("len dataset ", len(dataset))  # 21,198,093
-
-    dataset = OHLCDatasetMmap(
-        "memmap_dataset",
-        window_range=(1600, 4096),
-        is_train=True,
-        filter_intervals="15m",
-        filter_types="spot",
-    )
-    print("len dataset ", len(dataset))  # 169,582,431
 
 
 if __name__ == "__main__":

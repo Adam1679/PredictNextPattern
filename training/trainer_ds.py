@@ -3,7 +3,6 @@ import logging
 import os
 import time
 from collections import defaultdict
-from functools import partial
 
 import deepspeed
 import torch
@@ -11,15 +10,14 @@ import torch.distributed as dist
 import torch.nn as nn
 import yaml
 import yaml_include
-from data import OHLCDatasetMmap, Timer
 from deepspeed import DeepSpeedEngine
-from model import CryptoLlama, CryptoLlamaModel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import get_cosine_schedule_with_warmup
 
 import wandb
-from training.utils import evaluation_metrics
+from training.data import OHLCDatasetMmap, Timer
+from training.model import CryptoLlama, CryptoLlamaModel
+from training.utils import evaluation_metrics, get_lr
 
 _args = None
 
@@ -77,27 +75,6 @@ def input_output_distribution(batch, outputs):
         "data/output_min": round(output_min, 4),
     }
     return metrics
-
-
-# learning rate decay scheduler (cosine with warmup)
-def get_lr(config, it):
-    import math
-
-    max_lr, min_lr = config["optimizer"]["lr"], config["optimizer"]["min_lr"]
-    warmup_iters = config["optimizer"]["warmup_steps"]
-    total_steps = config["optimizer"]["total_steps"]
-    # 1) linear warmup for warmup_iters steps
-    if it < warmup_iters:
-        return max_lr * it / warmup_iters
-    # 2) if it > lr_decay_iters, return min learning rate
-    lr_decay_iters = total_steps - warmup_iters
-    if it > lr_decay_iters:
-        return min_lr
-    # 3) in between, use cosine decay down to min learning rate
-    decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
-    assert 0 <= decay_ratio <= 1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
-    return min_lr + coeff * (max_lr - min_lr)
 
 
 def train(
@@ -319,7 +296,7 @@ def main():
         total_steps = all_in_one_config["optimizer"]["total_steps"]
         learning_rate = all_in_one_config["optimizer"]["lr"]
         weight_decay = all_in_one_config["optimizer"]["weight_decay"]
-        warmup_steps = all_in_one_config["optimizer"]["warmup_steps"]
+        all_in_one_config["optimizer"]["warmup_steps"]
         seq_len = all_in_one_config["data"]["max_seq_len"]
         min_seq_len = all_in_one_config["data"]["min_seq_len"]
         batch_size_per_rank = batch_size // WORLD_SIZE
@@ -351,14 +328,6 @@ def main():
         print_master(f"Number of parameters: {model.num_parameters():,}")
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-
-    # Initialize the learning rate scheduler
-    partial(
-        get_cosine_schedule_with_warmup,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps,
-        num_cycles=1,
-    )
 
     # DeepSpeed configuration
     ds_config = all_in_one_config["distributed"]
