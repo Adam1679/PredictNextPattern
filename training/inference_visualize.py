@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import datetime
 from itertools import product
 
+import pandas as pd
 import torch
 import torch.nn as nn
 import yaml
@@ -15,6 +16,7 @@ from model import CryptoLlama, CryptoLlamaModel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from training.plotting import plot_ohlc_candlestick_with_volume_and_prediction
 from training.utils import evaluation_metrics
 
 logging.basicConfig(
@@ -40,22 +42,6 @@ def print_rank(msg):
 def print_master(msg):
     if RANK == 0:
         logger.info(f"[Master] {msg}")
-
-
-def predict_one(model, all_in_one_config):
-    OHLCDatasetMmap(
-        all_in_one_config["data"]["data_root"],
-        window_range=(
-            all_in_one_config["data"]["min_seq_len"],
-            all_in_one_config["data"]["max_seq_len"],
-        ),
-        is_train=False,
-        sample_n=all_in_one_config["validation"]["sample_n"],
-        filter_symbols=all_in_one_config["validation"]["filter_symbols"],
-        filter_intervals=all_in_one_config["validation"]["filter_intervals"],
-        world_size=WORLD_SIZE,
-        rank=RANK,
-    )
 
 
 def validate(model, all_in_one_config):
@@ -185,6 +171,64 @@ def inference_one(model, valset, symbol, interval, index, type_str):
     valset.plot_kline_with_prediction(item=item, prediction=prediction, output_file=output_file)
 
 
+def visualize_live_prediction(model, symbol, interval, output_file):
+    def prepare_data():
+        # load jsonl as dataframe
+        with open("training/get_binance_test_data_dumped.jsonl", "r") as f:
+            lines = f.readlines()
+            lines = [json.loads(line) for line in lines]
+
+        df = pd.DataFrame(lines)
+        df = df.sort_values("open_time")
+        df["date"] = pd.to_datetime(df["open_time"], unit="s")
+        df = df.rename(
+            columns={
+                "open_price": "open",
+                "high_price": "high",
+                "low_price": "low",
+                "close_price": "close",
+            }
+        )
+        return df
+
+    def normalize_data(data):
+        return (data / data[0][0] - 1) * 100
+
+    def predict(model, data):
+        with torch.no_grad():
+            inputs = (
+                torch.tensor(data, dtype=torch.bfloat16)
+                .unsqueeze(0)
+                .to(torch.cuda.current_device())
+            )
+            outputs = model(inputs=inputs)
+        return outputs.squeeze(0).float().cpu().numpy()
+
+    # Fetch live data
+    df = prepare_data()  # [T, 4]
+    input_data = df[["open", "high", "low", "close"]].values
+    # Prepare input data for the model
+    normalized_data = normalize_data(input_data)
+    df[["open", "high", "low", "close"]] = normalized_data
+
+    predictions = predict(model, normalized_data)
+
+    # Prepare prediction data
+    pred_df = pd.DataFrame(
+        {
+            "date": df["date"],
+            "predicted_price": predictions[
+                :, 3
+            ],  # Assuming the last column is the close price prediction
+        }
+    )
+    # Visualize
+    plot_ohlc_candlestick_with_volume_and_prediction(
+        df, pred_df, output_filename=output_file, symbol=symbol, interval=interval
+    )
+    print(f"Visualization saved to {output_file}")
+
+
 def get_args():
     import argparse
 
@@ -199,6 +243,7 @@ def get_args():
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--type", type=str, default=None)
     parser.add_argument("--observation_length", type=int, default=0)
+    parser.add_argument("--use_live", action="store_true")
     return parser.parse_args()
 
 
@@ -221,7 +266,10 @@ def main():
     if args.validate:
         val_metrics = validate(model, all_in_one_config)
         print_master(val_metrics)
-    if args.test_index is not None:
+    if args.use_live:
+        visualize_live_prediction(model, args.symbol, args.interval, "live_prediction.html")
+
+    elif args.test_index is not None:
         assert args.symbol is not None, "Symbol must be provided"
         assert args.interval is not None, "Interval must be provided"
         indexs = args.test_index.split(",")

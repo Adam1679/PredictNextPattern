@@ -1,1 +1,2 @@
-python training/inference_visualize.py --ckpt=/home/adamzhang/PredictNextPattern/checkpoints/28M_1h_bsz128/global_step2000 --test_index 100 --symbol ETHUSDT,PEPEUSDT --interval 1h --type spot
+# python training/inference_visualize.py --ckpt=/home/adamzhang/PredictNextPattern/checkpoints/28M_1h_bsz128_predict_price_larger_range/global_step6000 --test_index 100 --symbol ETHUSDT,PEPEUSDT --interval 1h --type spot
+python training/inference_visualize.py --ckpt=/home/adamzhang/PredictNextPattern/checkpoints/28M_1h_bsz128_predict_price_larger_range/global_step6000 --use_live --symbol ETHUSDT --interval 1h --type spot

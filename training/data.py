@@ -274,7 +274,6 @@ class OHLCDatasetMmap(IterableDataset):
             for i in range(normalized_price.shape[0])
         ]
         df = pd.DataFrame(data_as_list_of_dict)
-        breakpoint()
         df["date"] = pd.to_datetime(df["timestamp_s"], unit="s")
         if prediction is not None:
             prediction = prediction.to(torch.float32).numpy()
