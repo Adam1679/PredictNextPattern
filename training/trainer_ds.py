@@ -8,13 +8,13 @@ import deepspeed
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+import wandb
 import yaml
 import yaml_include
 from deepspeed import DeepSpeedEngine
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-import wandb
 from training.data import OHLCDatasetMmap, Timer
 from training.model import CryptoLlama, CryptoLlamaModel
 from training.utils import evaluation_metrics, get_lr
