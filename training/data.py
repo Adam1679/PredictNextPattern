@@ -136,21 +136,19 @@ class OHLCDatasetMmap(IterableDataset):
             yield self.__getitem__(randint)
             i += 1
 
-    @classmethod
+    @staticmethod
     def normalize_rescale(ohlcv):
         # ohlcv = torch.log(ohlcv / (ohlcv[0] + 1e-12))
         # ohlcv: (seq_len, 4)
-        normalize_on_open = True
-        if normalize_on_open:
-            open_price = ohlcv[0, 0]
-            ohlcv = ohlcv / (open_price + 1e-12) - 1
-            ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
-            return ohlcv
-        else:
-            open_price = ohlcv[:, :1]
-            ohlcv = ohlcv / (open_price + 1e-12) - 1
-            ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
-            return ohlcv
+        open_price = ohlcv[0, 0]  # scalar
+        ohlcv = ohlcv / (open_price + 1e-12) - 1
+        ohlcv = torch.nan_to_num(ohlcv, nan=0.0, posinf=0.0, neginf=0.0)
+        return ohlcv, open_price
+
+    @staticmethod
+    def unnormalize_rescale(ohlcv, denominator):
+        # ohlcv: (seq_len, 4), denominator: scalar
+        return (ohlcv + 1) * (denominator + 1e-12)
 
     def __getitem__(self, index):
         bin_idx = bisect_right(self.prefix_sum, index) - 1
@@ -179,7 +177,9 @@ class OHLCDatasetMmap(IterableDataset):
 
         volume = torch.tensor(arr[start:end, 4], dtype=torch.float32)
         if self.normalize_rescale_price:
-            ohlcv = self.normalize_rescale(ohlcv)
+            ohlcv, denominator = self.normalize_rescale(ohlcv)
+        else:
+            denominator = 1
         if self.clip:
             ohlcv = torch.clamp(ohlcv, self.clip[0], self.clip[1])
         return {
@@ -193,6 +193,7 @@ class OHLCDatasetMmap(IterableDataset):
             "volume": volume,
             "index": index,
             "seq_len": actual_length,
+            "denominator": denominator,
         }
 
     def collate_fn(self, batch, pad_value=0):
@@ -238,6 +239,7 @@ class OHLCDatasetMmap(IterableDataset):
         batched_inputs = {
             "symbol": [item["symbol"] for item in batch],
             "seq_len": [item["seq_len"] for item in batch],
+            "denominator": [item["denominator"] for item in batch],
             "type": [item["type"] for item in batch],
             "interval": [item["interval"] for item in batch],
             "timestamp_s_start": [item["timestamp_s_start"] for item in batch],

@@ -1,9 +1,18 @@
 from math import pi
 
+import numpy as np
 import pandas as pd
 from bokeh.io import save
 from bokeh.layouts import column
-from bokeh.models import ColumnDataSource, DataRange1d, HoverTool, Legend, NumeralTickFormatter
+from bokeh.models import (
+    ColumnDataSource,
+    DataRange1d,
+    DataTable,
+    HoverTool,
+    Legend,
+    NumeralTickFormatter,
+    TableColumn,
+)
 from bokeh.plotting import figure
 
 
@@ -96,8 +105,21 @@ def plot_ohlc_candlestick(data, predicted_data=None, symbol="", interval="", out
         pred_df = pd.DataFrame(predicted_data)
         pred_df["date"] = pd.to_datetime(pred_df["date"])
         pred_df = pred_df.sort_values("date")
-        pred_source = ColumnDataSource(pred_df)
-
+        # Merge actual and predicted data
+        merged_df = pd.merge(df, pred_df, on="date", how="inner")
+        merged_df["price_diff"] = merged_df["close"] - merged_df["predicted_price"]
+        merged_df["pnl"] = (
+            np.sign(merged_df["predicted_price"] - merged_df["open"])
+            * (merged_df["close"] - merged_df["open"])
+            / merged_df["open"]
+        )
+        merged_df["pnl"] = merged_df["pnl"].fillna(0)
+        merged_df["cost"] = 8e-4
+        merged_df["cumulative_pnl"] = merged_df["pnl"].cumsum()
+        merged_df["cumulative_pnl_with_cost"] = (
+            merged_df["pnl"].cumsum() - merged_df["cost"].cumsum()
+        )
+        merged_source = ColumnDataSource(merged_df)
         predicted_line = p1.line(
             "date",
             "predicted_price",
@@ -105,7 +127,7 @@ def plot_ohlc_candlestick(data, predicted_data=None, symbol="", interval="", out
             line_alpha=0.5,
             line_dash="dashed",
             line_width=2,
-            source=pred_source,
+            source=merged_source,
             name="Predicted Price",
         )
 
@@ -124,7 +146,8 @@ def plot_ohlc_candlestick(data, predicted_data=None, symbol="", interval="", out
         # Add legend
         legend = Legend(items=[("Actual", [candlesticks]), ("Predicted", [predicted_line])])
         p1.add_layout(legend, "right")
-
+    else:
+        merged_source = None
     # Volume chart
     p2 = figure(x_axis_type="datetime", tools=TOOLS, width=1000, height=200, x_range=p1.x_range)
     p2.y_range = DataRange1d(range_padding=0.05, start=0)
@@ -150,8 +173,97 @@ def plot_ohlc_candlestick(data, predicted_data=None, symbol="", interval="", out
 
     p2.yaxis.axis_label = "Volume"
 
-    # Align the charts
-    charts = column(p1, p2)
+    if merged_source is not None:
+        # Price difference chart
+        p3 = figure(x_axis_type="datetime", tools=TOOLS, width=1000, height=200, x_range=p1.x_range)
+        p3.y_range = DataRange1d(range_padding=0.05)
+        p3.xaxis.major_label_orientation = pi / 4
+        p3.grid.grid_line_alpha = 0.3
+
+        # Use the same x-axis formatter for the price difference chart
+        p3.xaxis.formatter = p1.xaxis.formatter
+
+        # Price difference line
+        cumulative_pnl_line = p3.line(
+            "date",
+            "cumulative_pnl",
+            line_color="blue",
+            line_width=2,
+            source=merged_source,
+            name="Cum PnL",
+        )
+        cumulative_pnl_with_cost = p3.line(
+            "date",
+            "cumulative_pnl_with_cost",
+            line_color="green",
+            line_width=2,
+            source=merged_source,
+            name="Cum PnL with Fees",
+        )
+
+        # Price difference hover tool
+        hover_price_diff = HoverTool(
+            renderers=[cumulative_pnl_line, cumulative_pnl_with_cost],
+            tooltips=[
+                ("Date", "@date{%Y-%m-%d %H:%M:%S}"),
+                ("Cum Pnl", "@cumulative_pnl{0.0000}"),
+                ("Cum Pnl With Fee", "@cumulative_pnl_with_cost{0.0000}"),
+            ],
+            formatters={"@date": "datetime"},
+            mode="vline",
+        )
+        p3.add_tools(hover_price_diff)
+
+        p3.yaxis.axis_label = "Cumulative PnL"
+
+        # summary stats
+        stats = {
+            "total_pnl": merged_df["cumulative_pnl"].iloc[-1],
+            "total_pnl_with_cost": merged_df["cumulative_pnl_with_cost"].iloc[-1],
+            "average_pnl": merged_df["pnl"].mean(),
+            "average_cost": merged_df["cost"].mean(),
+            "pnl_max": merged_df["pnl"].max(),
+            "pnl_min": merged_df["pnl"].min(),
+            "pnl_p90": merged_df["pnl"].quantile(0.9),
+            "pnl_p10": merged_df["pnl"].quantile(0.1),
+            "num_trades": len(merged_df),
+        }
+        column_stats = {
+            "Metric": [
+                "Total PnL",
+                "Total PnL with Cost",
+                "Average PnL",
+                "Average Cost",
+                "Max PnL",
+                "Min PnL",
+                "P90 PnL",
+                "P10 PnL",
+                "Number of Trades",
+            ],
+            "Values": [
+                stats["total_pnl"],
+                stats["total_pnl_with_cost"],
+                stats["average_pnl"],
+                stats["average_cost"],
+                stats["pnl_max"],
+                stats["pnl_min"],
+                stats["pnl_p90"],
+                stats["pnl_p10"],
+                stats["num_trades"],
+            ],
+        }
+        summary_source = ColumnDataSource(column_stats)
+        columns = [
+            TableColumn(field="Metric", title="Metric"),
+            TableColumn(field="Values", title="Values"),
+        ]
+        summary_table = DataTable(source=summary_source, columns=columns, width=400, height=150)
+
+        # Align the charts
+        charts = column(p1, p2, p3, summary_table)
+    else:
+        charts = column(p1, p2)
+
     if output_filename:
         save(charts, filename=output_filename)
         print(f"Chart saved to {output_filename}")

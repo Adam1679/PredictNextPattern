@@ -206,12 +206,13 @@ def visualize_live_prediction(model, symbol, interval, output_file):
 
     # Fetch live data
     df = prepare_data()  # [T, 4]
-    input_data = df[["open", "high", "low", "close"]].values
+    input_data = torch.tensor(df[["open", "high", "low", "close"]].values)
     # Prepare input data for the model
-    normalized_data = OHLCDatasetMmap.normalize_rescale(input_data)
-    df[["open", "high", "low", "close"]] = normalized_data
+    normalized_data, denom = OHLCDatasetMmap.normalize_rescale(input_data)
+    # df[["open", "high", "low", "close"]] = normalized_data
 
     predictions = predict(model, normalized_data)
+    predictions = OHLCDatasetMmap.unnormalize_rescale(torch.tensor(predictions), denom).numpy()
 
     # Prepare prediction data
     pred_df = pd.DataFrame(
