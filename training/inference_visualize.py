@@ -142,7 +142,7 @@ def generate_visualize(model, valset, symbol, interval, index, type_str, observa
         observed_inputs = torch.cat([observed_inputs, last_prediction], dim=1)
 
     generated_outputs = torch.cat(generated_outputs, dim=1)
-    output_file = f"{symbol}_{interval}_{timestamp_s_iso}_generated.html"
+    output_file = f"{symbol}_{interval}_{timestamp_s_iso}_{index}_generated.html"
     valset.plot_kline_with_prediction(
         item=item,
         prediction=prediction,
@@ -152,21 +152,30 @@ def generate_visualize(model, valset, symbol, interval, index, type_str, observa
 
 
 @torch.inference_mode()
+def predict(model, data):
+    with torch.no_grad():
+        inputs = (
+            torch.tensor(data, dtype=torch.bfloat16).unsqueeze(0).to(torch.cuda.current_device())
+        )
+        inputs_max, input_min, inputs_std = inputs.max(), inputs.min(), inputs.std()
+        print(f"inputs_max: {inputs_max}, inputs_min: {input_min}, inputs_std: {inputs_std}")
+        # inputs_max: 1.5625, inputs_min: -0.416015625, inputs_std: 0.48046875
+        # inputs_max: 1.375, inputs_min: -20.0, inputs_std: 4.75
+        outputs = model(inputs=inputs)
+    return outputs.squeeze(0).float().cpu().numpy()
+
+
 def inference_one(model, valset, symbol, interval, index, type_str):
     if len(valset) <= index:
         logging.error(
             f"{symbol} {interval} {type_str} Index {index} out of range. Only has {len(valset)}"
         )
         return
-    clip = valset.clip
     item = valset[index]
-    inputs = torch.clamp_(item["inputs"], clip[0], clip[1])
-    inputs = item["inputs"].unsqueeze(0).to(DEVICE).to(torch.bfloat16)  # (1, seq_len, input_size)
     timestamp_s_iso = datetime.fromtimestamp(item["timestamp_s_start"]).strftime(
         "%Y-%m-%d_%H:%M:%S"
     )
-    prediction = model(inputs=inputs)  # (1, seq_len, output_size)
-    prediction = prediction.squeeze(0).cpu().to(torch.float32)
+    prediction = predict(model, item["inputs"].numpy())
     output_file = f"{symbol}_{interval}_{timestamp_s_iso}.html"
     valset.plot_kline_with_prediction(item=item, prediction=prediction, output_file=output_file)
 
@@ -192,23 +201,14 @@ def visualize_live_prediction(model, symbol, interval, output_file):
         return df
 
     def normalize_data(data):
-        return (data / data[0][0] - 1) * 100
-
-    def predict(model, data):
-        with torch.no_grad():
-            inputs = (
-                torch.tensor(data, dtype=torch.bfloat16)
-                .unsqueeze(0)
-                .to(torch.cuda.current_device())
-            )
-            outputs = model(inputs=inputs)
-        return outputs.squeeze(0).float().cpu().numpy()
+        data = data / data[0][0] - 1
+        return data
 
     # Fetch live data
     df = prepare_data()  # [T, 4]
     input_data = df[["open", "high", "low", "close"]].values
     # Prepare input data for the model
-    normalized_data = normalize_data(input_data)
+    normalized_data = OHLCDatasetMmap.normalize_rescale(input_data)
     df[["open", "high", "low", "close"]] = normalized_data
 
     predictions = predict(model, normalized_data)

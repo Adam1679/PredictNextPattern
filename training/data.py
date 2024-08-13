@@ -136,7 +136,8 @@ class OHLCDatasetMmap(IterableDataset):
             yield self.__getitem__(randint)
             i += 1
 
-    def normalize_rescale(self, ohlcv):
+    @classmethod
+    def normalize_rescale(ohlcv):
         # ohlcv = torch.log(ohlcv / (ohlcv[0] + 1e-12))
         # ohlcv: (seq_len, 4)
         normalize_on_open = True
@@ -179,7 +180,8 @@ class OHLCDatasetMmap(IterableDataset):
         volume = torch.tensor(arr[start:end, 4], dtype=torch.float32)
         if self.normalize_rescale_price:
             ohlcv = self.normalize_rescale(ohlcv)
-
+        if self.clip:
+            ohlcv = torch.clamp(ohlcv, self.clip[0], self.clip[1])
         return {
             "symbol": symbol,
             "type": type_str,
@@ -232,8 +234,7 @@ class OHLCDatasetMmap(IterableDataset):
         # Stack the padded sequences and attention masks
         stacked_inputs = torch.stack(padded_inputs)
         stacked_attention_masks = torch.stack(attention_masks)
-        if self.clip:
-            stacked_inputs = torch.clamp(stacked_inputs, self.clip[0], self.clip[1])
+
         batched_inputs = {
             "symbol": [item["symbol"] for item in batch],
             "seq_len": [item["seq_len"] for item in batch],
@@ -276,7 +277,8 @@ class OHLCDatasetMmap(IterableDataset):
         df = pd.DataFrame(data_as_list_of_dict)
         df["date"] = pd.to_datetime(df["timestamp_s"], unit="s")
         if prediction is not None:
-            prediction = prediction.to(torch.float32).numpy()
+            if isinstance(prediction, torch.Tensor):
+                prediction = prediction.to(torch.float32).numpy()
             prediction_as_list_of_dict = [
                 {
                     "timestamp_s": item["timestamp_s_start"] + i * INTERVAL_TO_SECONDS[interval],
