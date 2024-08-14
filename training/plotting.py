@@ -103,16 +103,25 @@ def plot_ohlc_candlestick(data, predicted_data=None, symbol="", interval="", out
     # Add predicted price line if predicted_data is provided
     if predicted_data is not None:
         pred_df = pd.DataFrame(predicted_data)
+
+        # the predicted price is shifted by 1 to align with the actual price
+        pred_df["predicted_price"] = pred_df["predicted_price"].shift(1)
         pred_df["date"] = pd.to_datetime(pred_df["date"])
         pred_df = pred_df.sort_values("date")
         # Merge actual and predicted data
         merged_df = pd.merge(df, pred_df, on="date", how="inner")
-        merged_df["price_diff"] = merged_df["close"] - merged_df["predicted_price"]
-        merged_df["pnl"] = (
-            np.sign(merged_df["predicted_price"] - merged_df["open"])
-            * (merged_df["close"] - merged_df["open"])
-            / merged_df["open"]
-        )
+        predicted_return = (
+            merged_df["predicted_price"].values - merged_df["open"].values
+        ) / merged_df["open"].values
+        predicted_return = np.nan_to_num(predicted_return)
+        # assuming buy and sell at open price
+        pnl_ratio = (merged_df["close"].values - merged_df["open"].values) / merged_df[
+            "open"
+        ].values
+        signal = np.where(np.abs(predicted_return) > 0, np.sign(predicted_return), 0.0)
+        pnl = signal * pnl_ratio
+        merged_df["signal"] = signal
+        merged_df["pnl"] = pnl
         merged_df["pnl"] = merged_df["pnl"].fillna(0)
         merged_df["cost"] = 8e-4
         merged_df["cumulative_pnl"] = merged_df["pnl"].cumsum()
@@ -226,7 +235,10 @@ def plot_ohlc_candlestick(data, predicted_data=None, symbol="", interval="", out
             "pnl_min": merged_df["pnl"].min(),
             "pnl_p90": merged_df["pnl"].quantile(0.9),
             "pnl_p10": merged_df["pnl"].quantile(0.1),
-            "num_trades": len(merged_df),
+            "num_trades": (merged_df["signal"] != 0).sum(),
+            "num_long": (merged_df["signal"] > 0).sum(),
+            "num_short": (merged_df["signal"] < 0).sum(),
+            "win_rate": (merged_df["pnl"] > 0).mean(),
         }
         column_stats = {
             "Metric": [
@@ -239,6 +251,9 @@ def plot_ohlc_candlestick(data, predicted_data=None, symbol="", interval="", out
                 "P90 PnL",
                 "P10 PnL",
                 "Number of Trades",
+                "Number of (Long) Trades",
+                "Number of (Short) Trades",
+                "Win Rate",
             ],
             "Values": [
                 stats["total_pnl"],
@@ -250,6 +265,9 @@ def plot_ohlc_candlestick(data, predicted_data=None, symbol="", interval="", out
                 stats["pnl_p90"],
                 stats["pnl_p10"],
                 stats["num_trades"],
+                stats["num_long"],
+                stats["num_short"],
+                stats["win_rate"],
             ],
         }
         summary_source = ColumnDataSource(column_stats)

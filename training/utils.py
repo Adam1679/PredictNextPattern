@@ -2,6 +2,46 @@ import torch
 from torch import distributed as dist
 
 
+def evaluate_metrics_signal_on_close(predictions, labels, mask):
+    close_price_t = labels[:, :, 3].reshape(-1)
+    open_price_t = labels[:, :, 0].reshape(-1)
+    pred_t = predictions[:, :, 3].reshape(-1)
+    mask_t = mask.reshape(-1)
+    signal = torch.sign(pred_t - open_price_t) * mask_t
+    pnl = signal * (close_price_t - open_price_t)
+    win_rate = (pnl > 0).sum(dim=1) / mask_t.sum(dim=1)
+    avg_pnl = pnl.sum(dim=1) / mask_t.sum(dim=1)
+
+    if dist.is_initialized():
+        win_rate = dist.all_reduce(win_rate, op=dist.ReduceOp.AVG)
+        avg_pnl = dist.all_reduce(avg_pnl, op=dist.ReduceOp.AVG)
+    return {
+        "win_rate_signal_on_close": win_rate.mean().item(),
+        "avg_pnl_signal_on_close": avg_pnl.mean().item(),
+    }
+
+
+def evaluate_metrics_signal_on_high_low(predictions, labels, mask):
+    close_price_t = labels[:, :, 3].reshape(-1)
+    open_price_t = labels[:, :, 0].reshape(-1)
+    pred_low_t = predictions[:, :, 2].reshape(-1)
+    pred_high_t = predictions[:, :, 1].reshape(-1)
+    mask_t = mask.reshape(-1)
+    upside = torch.maximum(pred_high_t - open_price_t, torch.zeros_like(open_price_t)) * mask_t
+    downside = torch.maximum(open_price_t - pred_low_t, torch.zeros_like(open_price_t)) * mask_t
+    signal = torch.sign(upside - downside)
+    pnl = signal * (close_price_t - open_price_t)
+    win_rate = (pnl > 0).sum(dim=1) / mask_t.sum(dim=1)
+    avg_pnl = pnl.sum(dim=1) / mask_t.sum(dim=1)
+    if dist.is_initialized():
+        win_rate = dist.all_reduce(win_rate, op=dist.ReduceOp.AVG)
+        avg_pnl = dist.all_reduce(avg_pnl, op=dist.ReduceOp.AVG)
+    return {
+        "win_rate_signal_on_high_low": win_rate.mean().item(),
+        "avg_pnl_signal_on_high_low": avg_pnl.mean().item(),
+    }
+
+
 def evaluation_metrics_single(predictions, labels, mask):
     # predict: [B, T]
     # label: [B, T]
@@ -15,7 +55,7 @@ def evaluation_metrics_single(predictions, labels, mask):
     mse = ((valid_predictions - valid_labels) ** 2).sum(dim=1) / mask.sum(dim=1)
 
     # Calculate the relative change
-    pred_relative_change = (predictions[:, 1:] - predictions[:, :-1]) / (predictions[:, :-1] + 1e-8)
+    pred_relative_change = ((predictions - labels) / (labels + 1e-8))[:, :-1]
     label_relative_change = (labels[:, 1:] - labels[:, :-1]) / (labels[:, :-1] + 1e-8)
 
     # pred_relative_change = predictions[:, 1:]
@@ -103,10 +143,15 @@ def evaluation_metrics_single(predictions, labels, mask):
 
 def evaluation_metrics(predictions, labels, mask):
     all_metrics = {}
-    for i, name in enumerate(["open", "high", "low", "close"]):
-        metrics = evaluation_metrics_single(predictions[:, :, i], labels[:, :, i], mask)
-        metrics = {f"{name}/{k}": v for k, v in metrics.items()}
-        all_metrics.update(metrics)
+    # for i, name in enumerate(["open", "high", "low", "close"]):
+    #     metrics = evaluation_metrics_single(predictions[:, :, i], labels[:, :, i], mask)
+    #     metrics = {f"{name}/{k}": v for k, v in metrics.items()}
+    #     all_metrics.update(metrics)
+
+    metrics1 = evaluate_metrics_signal_on_close(predictions, labels, mask)
+    metrics2 = evaluate_metrics_signal_on_high_low(predictions, labels, mask)
+    all_metrics.update(metrics1)
+    all_metrics.update(metrics2)
     return all_metrics
 
 
