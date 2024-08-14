@@ -9,8 +9,8 @@ def evaluate_metrics_signal_on_close(predictions, labels, mask):
     mask_t = mask.reshape(-1)
     signal = torch.sign(pred_t - open_price_t) * mask_t
     pnl = signal * (close_price_t - open_price_t)
-    win_rate = (pnl > 0).sum(dim=1) / mask_t.sum(dim=1)
-    avg_pnl = pnl.sum(dim=1) / mask_t.sum(dim=1)
+    win_rate = (pnl > 0).sum() / mask_t.sum()
+    avg_pnl = pnl.sum() / mask_t.sum()
 
     if dist.is_initialized():
         win_rate = dist.all_reduce(win_rate, op=dist.ReduceOp.AVG)
@@ -27,12 +27,12 @@ def evaluate_metrics_signal_on_high_low(predictions, labels, mask):
     pred_low_t = predictions[:, :, 2].reshape(-1)
     pred_high_t = predictions[:, :, 1].reshape(-1)
     mask_t = mask.reshape(-1)
-    upside = torch.maximum(pred_high_t - open_price_t, torch.zeros_like(open_price_t)) * mask_t
-    downside = torch.maximum(open_price_t - pred_low_t, torch.zeros_like(open_price_t)) * mask_t
-    signal = torch.sign(upside - downside)
+    upside = torch.maximum(pred_high_t - open_price_t, torch.zeros_like(open_price_t))
+    downside = torch.maximum(open_price_t - pred_low_t, torch.zeros_like(open_price_t))
+    signal = torch.sign(upside - downside) * mask_t
     pnl = signal * (close_price_t - open_price_t)
-    win_rate = (pnl > 0).sum(dim=1) / mask_t.sum(dim=1)
-    avg_pnl = pnl.sum(dim=1) / mask_t.sum(dim=1)
+    win_rate = (pnl > 0).sum() / mask_t.sum()
+    avg_pnl = pnl.sum() / mask_t.sum()
     if dist.is_initialized():
         win_rate = dist.all_reduce(win_rate, op=dist.ReduceOp.AVG)
         avg_pnl = dist.all_reduce(avg_pnl, op=dist.ReduceOp.AVG)
@@ -117,36 +117,36 @@ def evaluation_metrics_single(predictions, labels, mask):
         dist.all_reduce(mae, op=dist.ReduceOp.AVG)
         dist.all_reduce(mse, op=dist.ReduceOp.AVG)
 
-    avg_precision = precision.mean()
-    avg_recall = recall.mean()
-    avg_recall_up = recall_up.mean()
-    avg_recall_down = recall_down.mean()
-    avg_precision_up = precision_up.mean()
-    avg_precision_down = precision_down.mean()
-    avg_f1 = f1.mean()
+    precision.mean()
+    recall.mean()
+    recall_up.mean()
+    recall_down.mean()
+    precision_up.mean()
+    precision_down.mean()
+    f1.mean()
     avg_mae = mae.mean()
     avg_mse = mse.mean()
 
     metrics = {
-        "mae": round(avg_mae.item(), 2),
-        "mse": round(avg_mse.item(), 2),
-        "recall": round(avg_recall.item(), 2),
-        "precision": round(avg_precision.item(), 2),
-        "precision_up": round(avg_precision_up.item(), 2),
-        "precision_down": round(avg_precision_down.item(), 2),
-        "recall_up": round(avg_recall_up.item(), 2),
-        "recall_down": round(avg_recall_down.item(), 2),
-        "f1": round(avg_f1.item(), 2),
+        "mae": round(avg_mae.item(), 4),
+        "mse": round(avg_mse.item(), 8),
+        # "recall": round(avg_recall.item(), 2),
+        # "precision": round(avg_precision.item(), 2),
+        # "precision_up": round(avg_precision_up.item(), 2),
+        # "precision_down": round(avg_precision_down.item(), 2),
+        # "recall_up": round(avg_recall_up.item(), 2),
+        # "recall_down": round(avg_recall_down.item(), 2),
+        # "f1": round(avg_f1.item(), 2),
     }
     return metrics
 
 
 def evaluation_metrics(predictions, labels, mask):
     all_metrics = {}
-    # for i, name in enumerate(["open", "high", "low", "close"]):
-    #     metrics = evaluation_metrics_single(predictions[:, :, i], labels[:, :, i], mask)
-    #     metrics = {f"{name}/{k}": v for k, v in metrics.items()}
-    #     all_metrics.update(metrics)
+    for i, name in enumerate(["open", "high", "low", "close"]):
+        metrics = evaluation_metrics_single(predictions[:, :, i], labels[:, :, i], mask)
+        metrics = {f"{name}/{k}": v for k, v in metrics.items()}
+        all_metrics.update(metrics)
 
     metrics1 = evaluate_metrics_signal_on_close(predictions, labels, mask)
     metrics2 = evaluate_metrics_signal_on_high_low(predictions, labels, mask)
