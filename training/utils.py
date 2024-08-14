@@ -13,11 +13,11 @@ def evaluate_metrics_signal_on_close(predictions, labels, mask):
     avg_pnl = pnl.sum() / mask_t.sum()
 
     if dist.is_initialized():
-        win_rate = dist.all_reduce(win_rate, op=dist.ReduceOp.AVG)
-        avg_pnl = dist.all_reduce(avg_pnl, op=dist.ReduceOp.AVG)
+        dist.all_reduce(win_rate, op=dist.ReduceOp.AVG)
+        dist.all_reduce(avg_pnl, op=dist.ReduceOp.AVG)
     return {
-        "win_rate_signal_on_close": win_rate.mean().item(),
-        "avg_pnl_signal_on_close": avg_pnl.mean().item(),
+        "win_rate_signal_on_close": win_rate.item(),
+        "avg_pnl_signal_on_close": avg_pnl.item(),
     }
 
 
@@ -34,11 +34,11 @@ def evaluate_metrics_signal_on_high_low(predictions, labels, mask):
     win_rate = (pnl > 0).sum() / mask_t.sum()
     avg_pnl = pnl.sum() / mask_t.sum()
     if dist.is_initialized():
-        win_rate = dist.all_reduce(win_rate, op=dist.ReduceOp.AVG)
-        avg_pnl = dist.all_reduce(avg_pnl, op=dist.ReduceOp.AVG)
+        dist.all_reduce(win_rate, op=dist.ReduceOp.AVG)
+        dist.all_reduce(avg_pnl, op=dist.ReduceOp.AVG)
     return {
-        "win_rate_signal_on_high_low": win_rate.mean().item(),
-        "avg_pnl_signal_on_high_low": avg_pnl.mean().item(),
+        "win_rate_signal_on_high_low": win_rate.item(),
+        "avg_pnl_signal_on_high_low": avg_pnl.item(),
     }
 
 
