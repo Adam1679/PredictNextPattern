@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 import wandb
 from training.data import OHLCDatasetMmap, Timer
-from training.model import CryptoLlama, CryptoLlamaModel
+from training.model import CryptoLlama, CryptoLlamaModel, CryptoT5Config, CryptoT5Model
 from training.utils import evaluation_metrics, get_lr
 
 _args = None
@@ -327,7 +327,18 @@ def main():
         # Initialize the model
         model_config = CryptoLlama(**all_in_one_config["model"])
     with Timer("Initialize Model"):
-        model = CryptoLlamaModel(model_config).to(torch.bfloat16).to(torch.cuda.current_device())
+        model_type = all_in_one_config["model"].get("type", "llama")
+        if model_type == "llama":
+            model_config = CryptoLlama(**all_in_one_config["model"])
+            model = (
+                CryptoLlamaModel(model_config).to(torch.bfloat16).to(torch.cuda.current_device())
+            )
+        elif model_type == "t5":
+            model_config = CryptoT5Config(**all_in_one_config["model"])
+            model = CryptoT5Model(model_config).to(torch.bfloat16).to(torch.cuda.current_device())
+        else:
+            raise ValueError(f"Unsupported model type: {model_type}")
+
         print_master(f"Number of parameters: {model.num_parameters():,}")
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)

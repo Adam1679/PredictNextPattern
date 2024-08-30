@@ -299,6 +299,133 @@ class OHLCDatasetMmap(IterableDataset):
             )
 
 
+class EnhancedOHLCDataset(OHLCDatasetMmap):
+    BAR_HEIGHTS_BUCKETS = torch.tensor([0.2, 0.5, 1, 1.5, 3], dtype=torch.float32)  # 6 classes
+    SHADOW_RATIO_BUCKETS = torch.tensor(
+        [0.05, 0.1, 0.2, 0.5, 0.8, 0.9, 0.95], dtype=torch.float32
+    )  # 8 classes
+    BODY_RATIO_BUCKETS = torch.tensor(
+        [0.05, 0.1, 0.2, 0.5, 0.8, 0.9, 0.95], dtype=torch.float32
+    )  # 8 classes
+    NORMALIZED_CLOSE_BUCKETS = torch.linspace(-50, 50, 4097)[1:-1]  # 4096 classes
+    BOOLINGGER_BUCKETS = torch.tensor(
+        [0, 0.25, 0.5, 0.75, 1], dtype=torch.float32
+    )  # 0-, 0.25, 0.5, 0.75, 1+, 0- & 1+ means breakout. 6 classes
+    WINDOW_SIZE = 20
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def calculate_atr(self, high, low, close):
+        # TrueRange = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        # but because the prev_close == open, so we can simplify to
+        # TrueRange = high - low
+        ranges = high - low
+        return ranges.mean()
+
+    def __getitem__(self, index):
+        item = super().__getitem__(index)
+        ohlc = item.pop("inputs")  # Shape: (seq_len, 4)
+        # print('ohlc', ohlc[:10])
+        # 1. Boolean feature for moving up or down
+        moving_up = torch.zeros(ohlc.shape[0], dtype=torch.bool)
+        moving_up[1:] = ohlc[1:, 3] > ohlc[:-1, 3]  # Compare current close to previous close
+        # print('moving_up', moving_up[:10])
+        # 2. Higher high or lower high
+        higher_high = torch.zeros(ohlc.shape[0], dtype=torch.bool)
+        higher_high[1:] = ohlc[1:, 1] > ohlc[:-1, 1]  # Compare current high to previous high
+        # print('higher_high', higher_high[:10])
+        # 3. Higher low or lower low
+        higher_low = torch.zeros(ohlc.shape[0], dtype=torch.bool)
+        higher_low[1:] = ohlc[1:, 2] > ohlc[:-1, 2]  # Compare current low to previous low
+        # print('higher_low', higher_low[:10])
+        # 4. Breakout of 20 rolling window high or low
+        breakout = torch.zeros(ohlc.shape[0], dtype=torch.bool)
+        window_high = torch.zeros(ohlc.shape[0], dtype=torch.float32)
+        window_low = torch.zeros(ohlc.shape[0], dtype=torch.float32)
+        bollinger_buckets = torch.zeros(ohlc.shape[0], dtype=torch.float32)
+        for i in range(1, ohlc.shape[0]):
+            if i > self.WINDOW_SIZE:
+                window = ohlc[i - self.WINDOW_SIZE : i]
+            else:
+                window = ohlc[:i]
+            window_high_ = torch.max(window[:, 1])
+            window_low_ = torch.min(window[:, 2])
+            close_price = ohlc[i, 3]
+            breakout[i] = (close_price > window_high_) or (close_price < window_low_)
+            window_high[i] = window_high_
+            window_low[i] = window_low_
+            ratio = (close_price - window_low_) / (window_high_ - window_low_)
+            bollinger_buckets[i] = torch.bucketize(ratio, self.BOOLINGGER_BUCKETS, right=True)
+
+        # print('breakout', breakout[:10])
+        # print('window_high', window_high[:10])
+        # print('window_low', window_low[:10])
+        # print('bollinger_buckets', bollinger_buckets[:10])
+
+        # 4.1 add a micro breakout feature
+        # 5. Bar height normalized by ATR and bucketized
+        atr = self.calculate_atr(ohlc[:, 1], ohlc[:, 2], ohlc[:, 3]) + 1e-6
+        bar_height = abs(ohlc[:, 1] - ohlc[:, 2])
+        bar_height_atr = bar_height / atr
+        bar_height_atr_buckets = torch.bucketize(
+            torch.clamp_(bar_height_atr, 0, 5), self.BAR_HEIGHTS_BUCKETS, right=True
+        )
+        # print('bar_height_atr_buckets', bar_height_atr_buckets[:10])
+        # 6. get the shape of this bar
+        up_shadow_ratio = (ohlc[:, 1] - torch.max(ohlc[:, 0], ohlc[:, 3])) / bar_height
+        body_ratio = torch.abs(ohlc[:, 0] - ohlc[:, 3]) / bar_height
+        up_shadow_ratio_buckets = torch.bucketize(
+            torch.clamp_(
+                up_shadow_ratio, self.SHADOW_RATIO_BUCKETS[0] - 1, self.SHADOW_RATIO_BUCKETS[-1] + 1
+            ),
+            self.SHADOW_RATIO_BUCKETS,
+            right=True,
+        )
+        body_ratio_buckets = torch.bucketize(
+            torch.clamp_(
+                body_ratio, self.BODY_RATIO_BUCKETS[0] - 1, self.BODY_RATIO_BUCKETS[0] + 1
+            ),
+            self.BODY_RATIO_BUCKETS,
+            right=True,
+        )
+        # print('up_shadow_ratio_buckets', up_shadow_ratio_buckets[:10])
+        # print('body_ratio_buckets', body_ratio_buckets[:10])
+
+        # 7. get the bucketized close price
+        close_price_buckets = torch.bucketize(
+            torch.clamp_(
+                ohlc[:, 3] / ohlc[0, 3],
+                self.NORMALIZED_CLOSE_BUCKETS[0] - 1,
+                self.NORMALIZED_CLOSE_BUCKETS[-1] + 1,
+            ),
+            self.NORMALIZED_CLOSE_BUCKETS,
+            right=True,
+        )
+        # print('close_price_buckets', close_price_buckets[:10])
+        # Combine all features
+        enhanced_features = torch.stack(
+            [
+                # 价格
+                close_price_buckets,
+                # 方向
+                moving_up.long(),
+                # Signal Bar 强弱
+                up_shadow_ratio_buckets,
+                body_ratio_buckets,
+                bar_height_atr_buckets,
+                # 市场结构
+                higher_high.long(),
+                higher_low.long(),
+                bollinger_buckets,
+                breakout.long(),
+            ],
+            dim=1,
+        ).float()
+        item["inputs"] = enhanced_features  # (seq_len, 9)
+        return item
+
+
 def preview_size():
     # dataset = OHLCDatasetMmap(
     #         "memmap_dataset", window_range=(1600, 4096), is_train=True, filter_intervals='1h', filter_types='spot'
@@ -319,6 +446,14 @@ def sample_kiline():
     dataset.plot_kline(100, "test.html")
 
 
+def sample_one():
+    dataset = EnhancedOHLCDataset(
+        "memmap_dataset", window_range=(128, 512), is_train=True, filter_intervals="1h"
+    )
+    print(dataset[100])
+
+
 if __name__ == "__main__":
     # preview_size()
-    sample_kiline()
+    torch.set_printoptions(precision=4)
+    sample_one()

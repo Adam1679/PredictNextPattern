@@ -3,6 +3,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from transformers import T5Config, T5ForConditionalGeneration
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaModel
 
@@ -69,3 +70,61 @@ class CryptoLlamaModel(nn.Module):
         flops_promised_h100 = 989e12  # H100 GPU bfloat16 peak flops is 989 TFLOPS
         mfu = flops_achieved / flops_promised_h100
         return mfu
+
+
+class CryptoT5Config(T5Config):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.input_size = kwargs["input_size"]
+        self.output_size = kwargs["output_size"]
+
+
+class CryptoT5Model(nn.Module):
+    """
+    T5 model adapted for cryptocurrency price prediction.
+
+    Args:
+        config: CryptoT5Config
+    """
+
+    def __init__(self, config: CryptoT5Config):
+        super().__init__()
+        self.model = T5ForConditionalGeneration(config)
+        self.in_proj = nn.Linear(config.input_size, config.d_model)
+        self.out_proj = nn.Linear(config.d_model, config.output_size)
+        self.config = config
+        self._num_parameters = None
+
+    def forward(
+        self,
+        attention_mask: Optional[torch.Tensor] = None,
+        inputs: Optional[torch.FloatTensor] = None,
+    ) -> torch.FloatTensor:
+        # inputs: (batch_size, seq_len, input_size)
+        inputs = self.in_proj(inputs)  # (batch_size, seq_len, d_model)
+
+        # Create a dummy decoder input
+        decoder_input_ids = torch.zeros(
+            (inputs.shape[0], 1), dtype=torch.long, device=inputs.device
+        )
+
+        outputs = self.model(
+            inputs_embeds=inputs,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+        )
+
+        last_hidden_states = outputs.last_hidden_state
+        prediction = self.out_proj(last_hidden_states)  # (batch_size, seq_len, output_size)
+        return prediction
+
+    def num_parameters(self):
+        if self._num_parameters is None:
+            self._num_parameters = sum(p.numel() for p in self.parameters())
+        return self._num_parameters
+
+    def estimate_mfu(self, fwdbwd_per_iter, dt):
+        """estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS"""
+        # Implement MFU estimation similar to CryptoLlamaModel if needed
+        # Note: You may need to adjust this calculation for T5 architecture
+        return 0  # Placeholder return value
