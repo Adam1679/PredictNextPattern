@@ -1,4 +1,5 @@
-data: 
+data:
+ version: 1
  data_root: memmap_dataset
  max_seq_len: &seq_len 2048
  min_seq_len: 128

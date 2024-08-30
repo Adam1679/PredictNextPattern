@@ -313,6 +313,18 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
     )  # 0-, 0.25, 0.5, 0.75, 1+, 0- & 1+ means breakout. 6 classes
     WINDOW_SIZE = 20
 
+    NAMES = [
+        "close_price_buckets",
+        "moving_up",
+        "up_shadow_ratio_buckets",
+        "body_ratio_buckets",
+        "bar_height_atr_buckets",
+        "higher_high",
+        "higher_low",
+        "bollinger_buckets",
+        "breakout",
+    ]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -407,18 +419,18 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
         enhanced_features = torch.stack(
             [
                 # 价格
-                close_price_buckets,
+                close_price_buckets,  # 4096
                 # 方向
-                moving_up.long(),
+                moving_up.long(),  # 2
                 # Signal Bar 强弱
-                up_shadow_ratio_buckets,
-                body_ratio_buckets,
-                bar_height_atr_buckets,
+                up_shadow_ratio_buckets,  # 8
+                body_ratio_buckets,  # 8
+                bar_height_atr_buckets,  # 6
                 # 市场结构
-                higher_high.long(),
-                higher_low.long(),
-                bollinger_buckets,
-                breakout.long(),
+                higher_high.long(),  # 2
+                higher_low.long(),  # 2
+                bollinger_buckets,  # 6
+                breakout.long(),  # 2
             ],
             dim=1,
         ).float()

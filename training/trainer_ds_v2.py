@@ -1,6 +1,4 @@
 import json
-import logging
-import os
 import time
 from collections import defaultdict
 
@@ -8,73 +6,94 @@ import deepspeed
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-import yaml
-import yaml_include
 from deepspeed import DeepSpeedEngine
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import wandb
-from training.data import EnhancedOHLCDataset, OHLCDatasetMmap, Timer
+from training.data import Timer
 from training.model import CryptoLlama, CryptoLlamaModel, CryptoT5Config, CryptoT5Model
+from training.trainer_ds import (
+    RANK,
+    WORLD_SIZE,
+    get_args,
+    get_trainset,
+    get_valset,
+    input_output_distribution,
+    load_config,
+    print_master,
+)
 from training.utils import evaluation_metrics, get_lr
 
-_args = None
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.StreamHandler())
-
-deepspeed.init_distributed(dist_backend="nccl")
-RANK = int(os.environ.get("RANK", 0))
-WORLD_SIZE = int(os.environ.get("WORLD_SIZE", 1))
-torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
-torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
-torch.set_float32_matmul_precision("high")
-
-yaml.add_constructor("!inc", yaml_include.Constructor(), yaml.Loader)
-
-
-def print_rank(msg):
-    logger.info(f"[Rank {RANK}] {msg}")
-
-
-def print_master(msg):
-    if RANK == 0:
-        logger.info(f"[Master] {msg}")
-
-
-def input_output_distribution(batch, outputs):
-    """
-    Compute the distribution of inputs and outputs
-    """
-    inputs = batch["inputs"]
-    n_unique_symbols = len(set(batch["symbol"]))
-    mean_seq_len = batch["attention_mask"].float().sum(dim=1).mean().item()
-
-    input_mean = inputs.mean().item()
-    input_max = inputs.max().item()
-    input_min = inputs.min().item()
-    input_std = inputs.std().item()
-    output_mean = outputs.mean().item()
-    output_std = outputs.std().item()
-    output_max = outputs.max().item()
-    output_min = outputs.min().item()
-    metrics = {
-        "data/input_mean": round(input_mean, 4),
-        "data/input_std": round(input_std, 4),
-        "data/output_mean": round(output_mean, 4),
-        "data/output_std": round(output_std, 4),
-        "data/n_unique_symbols": n_unique_symbols,
-        "data/mean_seq_len": round(mean_seq_len, 1),
-        "data/input_max": round(input_max, 4),
-        "data/input_min": round(input_min, 4),
-        "data/output_max": round(output_max, 4),
-        "data/output_min": round(output_min, 4),
+def validate(model, all_in_one_config):
+    val_batch_size = all_in_one_config["validation"]["batch_size"]
+    assert val_batch_size % WORLD_SIZE == 0, "Batch size must be divisible by the number of GPUs"
+    val_batch_size_per_rank = val_batch_size // WORLD_SIZE
+    valset = get_valset(all_in_one_config)
+    val_dataloader = DataLoader(
+        valset,
+        batch_size=val_batch_size_per_rank,
+        shuffle=False,
+        collate_fn=valset.collate_fn,
+        num_workers=all_in_one_config["data"]["num_workers"],
+    )
+    model.eval()
+    torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
+    loss_by_target = {
+        target_name: torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
+        for target_name in valset.NAMES
     }
-    return metrics
+
+    model_dtype = next(model.parameters()).dtype
+    val_metrics_list = defaultdict(list)
+    ce_loss = nn.CrossEntropyLoss()
+    with torch.no_grad():
+        val_step = 0
+        for batch in tqdm(val_dataloader, desc="Validating"):
+            inputs = batch["inputs"] = (
+                batch["inputs"].to(model.device).to(model_dtype)
+            )  # (batch_size, seq_len, input_size)
+            attention_mask = batch["attention_mask"] = batch["attention_mask"].to(
+                model.device
+            )  # (batch_size, seq_len)
+            outputs = model(inputs=inputs, attention_mask=attention_mask)
+
+            # Assume the target is the last value in each sequence
+            targets = inputs[:, 1:]  # (batch_size, seq_len-1, input_size)
+            # Get the last prediction for each sequence
+            predictions = outputs[:, :-1]  # (batch_size, seq_len-1, output_size)
+            # Create a mask for valid positions (where attention_mask is 1)
+            # Apply the mask to predictions and targets
+            valid_positions = attention_mask[:, :-1].bool()
+            ce_loss_values = []
+            for i in range(len(model.config.num_categories)):
+                ce_loss_values.append(
+                    ce_loss(
+                        outputs[i][valid_positions].view(-1, model.config.num_categories[i]),
+                        targets[valid_positions, i].view(-1),
+                    )
+                )
+
+            for i, target_name in enumerate(valset.NAMES):
+                loss_by_target[target_name].add_(ce_loss_values[i])
+
+            val_metrics = evaluation_metrics(predictions, targets, valid_positions)
+            val_metrics = {f"val/{k}": v for k, v in val_metrics.items()}
+            for k, v in val_metrics.items():
+                val_metrics_list[k].append(v)
+            val_step += 1
+            del batch
+    stats = {}
+    for i, target_name in enumerate(valset.NAMES):
+        dist.all_reduce(loss_by_target[target_name], op=dist.ReduceOp.AVG)
+        stats["val/loss_{}".format(target_name)] = loss_by_target[target_name] / val_step
+
+    for k, v in val_metrics_list.items():
+        stats[k] = sum(v) / len(v)
+
+    model.train()
+    return stats
 
 
 def train(
@@ -102,6 +121,7 @@ def train(
     total_tokens = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     model_dtype = next(model.parameters()).dtype
     global_total_tokens = 0
+    ce_loss = nn.CrossEntropyLoss()
     for step, batch in enumerate(train_dataloader):
         t0 = time.time()
         for param_group in optimizer.param_groups:
@@ -121,10 +141,17 @@ def train(
         # Create a mask for valid positions (where attention_mask is 1)
         # Apply the mask to predictions and targets
         valid_positions = attention_mask[:, :-1].bool()
-        masked_predictions = predictions[valid_positions]
-        masked_targets = targets[valid_positions]
+        ce_loss_values = []
+        for i in range(len(model.config.num_categories)):
+            ce_loss_values.append(
+                ce_loss(
+                    outputs[i][valid_positions].view(-1, model.config.num_categories[i]),
+                    targets[valid_positions, i].view(-1),
+                )
+            )
 
-        loss = nn.MSELoss()(masked_predictions, masked_targets)
+        loss = sum(ce_loss_values) / len(ce_loss_values)
+
         attention_mask.sum().item()
         model.backward(loss)
         global_norm = model.get_global_grad_norm()
@@ -191,148 +218,6 @@ def train(
     print_master(f"Saving checkpoint at final iteration {step}")
     model.save_checkpoint(f"{all_in_one_config['checkpointing']['dir']}/iter_{step}")
     wandb.finish()
-
-
-def validate(model, all_in_one_config):
-    val_batch_size = all_in_one_config["validation"]["batch_size"]
-    assert val_batch_size % WORLD_SIZE == 0, "Batch size must be divisible by the number of GPUs"
-    val_batch_size_per_rank = val_batch_size // WORLD_SIZE
-    valset = get_valset(all_in_one_config)
-    val_dataloader = DataLoader(
-        valset,
-        batch_size=val_batch_size_per_rank,
-        shuffle=False,
-        collate_fn=valset.collate_fn,
-        num_workers=all_in_one_config["data"]["num_workers"],
-    )
-    model.eval()
-    total_loss = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
-    model_dtype = next(model.parameters()).dtype
-    val_metrics_list = defaultdict(list)
-    with torch.no_grad():
-        val_step = 0
-        for batch in tqdm(val_dataloader, desc="Validating"):
-            inputs = batch["inputs"] = (
-                batch["inputs"].to(model.device).to(model_dtype)
-            )  # (batch_size, seq_len, input_size)
-            attention_mask = batch["attention_mask"] = batch["attention_mask"].to(
-                model.device
-            )  # (batch_size, seq_len)
-            outputs = model(inputs=inputs, attention_mask=attention_mask)
-
-            # Assume the target is the last value in each sequence
-            targets = inputs[:, 1:]  # (batch_size, seq_len-1, input_size)
-            # Get the last prediction for each sequence
-            predictions = outputs[:, :-1]  # (batch_size, seq_len-1, output_size)
-            # Create a mask for valid positions (where attention_mask is 1)
-            # Apply the mask to predictions and targets
-            valid_positions = attention_mask[:, :-1].bool()
-            masked_predictions = predictions[valid_positions]
-            masked_targets = targets[valid_positions]
-
-            token_avg_loss = nn.MSELoss()(masked_predictions, masked_targets)
-            val_metrics = evaluation_metrics(predictions, targets, valid_positions)
-            val_metrics = {f"val/{k}": v for k, v in val_metrics.items()}
-            for k, v in val_metrics.items():
-                val_metrics_list[k].append(v)
-            total_loss.add_(token_avg_loss)
-            val_step += 1
-            del batch
-    dist.all_reduce(total_loss, op=dist.ReduceOp.AVG)
-    model.train()
-    stats = {"val/loss": total_loss.item() / val_step}
-    for k, v in val_metrics_list.items():
-        stats[k] = sum(v) / len(v)
-    return stats
-
-
-def load_config(config_path):
-    with open(config_path, "r") as stream:
-        config = yaml.load(stream, yaml.Loader)
-    config["model"]["max_position_embeddings"] = config["data"]["max_seq_len"]
-    if len(get_args().run_name):
-        config["logging"]["wandb_run_name"] = get_args().run_name
-    return config
-
-
-def get_args():
-    global _args
-    import argparse
-
-    if _args:
-        return _args
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--local_rank", type=int, default=0)
-    parser.add_argument("--world_size", type=int, default=1)
-    parser.add_argument("--config", type=str, default="training/config.yaml")
-    parser.add_argument("--eval_only", action="store_true")
-    parser.add_argument("--ckpt", type=str, default="")
-    parser.add_argument("--profile", type=str, default="")
-    parser.add_argument("--run_name", type=str, default="")
-    _args = parser.parse_args()
-    return _args
-
-
-def get_trainset(all_in_one_config):
-    if all_in_one_config["data"]["version"] == 0:
-        dataset = OHLCDatasetMmap(
-            data_root=all_in_one_config["data"]["data_root"],
-            window_range=(
-                all_in_one_config["data"]["min_seq_len"],
-                all_in_one_config["data"]["max_seq_len"],
-            ),
-            is_train=True,
-            world_size=WORLD_SIZE,
-            rank=RANK,
-            filter_symbols=all_in_one_config["data"]["filter_symbols"],
-            filter_intervals=all_in_one_config["data"]["filter_intervals"],
-        )
-    elif all_in_one_config["data"]["version"] == 1:
-        dataset = EnhancedOHLCDataset(
-            data_root=all_in_one_config["data"]["data_root"],
-            window_range=(
-                all_in_one_config["data"]["min_seq_len"],
-                all_in_one_config["data"]["max_seq_len"],
-            ),
-            is_train=True,
-            world_size=WORLD_SIZE,
-            rank=RANK,
-            filter_symbols=all_in_one_config["data"]["filter_symbols"],
-            filter_intervals=all_in_one_config["data"]["filter_intervals"],
-        )
-    return dataset
-
-
-def get_valset(all_in_one_config):
-    if all_in_one_config["data"]["version"] == 0:
-        valset = OHLCDatasetMmap(
-            all_in_one_config["data"]["data_root"],
-            window_range=(
-                all_in_one_config["data"]["min_seq_len"],
-                all_in_one_config["data"]["max_seq_len"],
-            ),
-            is_train=False,
-            sample_n=all_in_one_config["validation"]["sample_n"],
-            filter_symbols=all_in_one_config["validation"]["filter_symbols"],
-            filter_intervals=all_in_one_config["validation"]["filter_intervals"],
-            world_size=WORLD_SIZE,
-            rank=RANK,
-        )
-    elif all_in_one_config["data"]["version"] == 1:
-        valset = EnhancedOHLCDataset(
-            all_in_one_config["data"]["data_root"],
-            window_range=(
-                all_in_one_config["data"]["min_seq_len"],
-                all_in_one_config["data"]["max_seq_len"],
-            ),
-            is_train=False,
-            sample_n=all_in_one_config["validation"]["sample_n"],
-            filter_symbols=all_in_one_config["validation"]["filter_symbols"],
-            filter_intervals=all_in_one_config["validation"]["filter_intervals"],
-            world_size=WORLD_SIZE,
-            rank=RANK,
-        )
-    return valset
 
 
 def main():

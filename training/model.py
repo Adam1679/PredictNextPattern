@@ -15,6 +15,9 @@ class CryptoLlama(LlamaConfig):
         super().__init__(**kwargs)
         self.input_size = kwargs["input_size"]
         self.output_size = kwargs["output_size"]
+        self.categorical_features = kwargs.get("categorical_features", 0)
+        self.embedding_dim = kwargs.get("embedding_dim", 0)
+        self.num_categories = kwargs.get("num_categories", [])  # For each categorical feature
 
 
 class CryptoLlamaModel(nn.Module):
@@ -28,22 +31,52 @@ class CryptoLlamaModel(nn.Module):
     def __init__(self, config: CryptoLlama):
         super().__init__()
         self.model = LlamaModel(config)
-        self.in_proj = nn.Linear(config.input_size, config.hidden_size)
-        self.out_proj = nn.Linear(config.hidden_size, config.output_size)
+
+        self.embeddings = nn.ModuleList(
+            [nn.Embedding(num_cats, config.embedding_dim) for num_cats in config.num_categories]
+        )
+        # Adjust input size to account for embeddings
+        total_embedding_dim = config.embedding_dim * len(config.num_categories)
+
+        assert total_embedding_dim > 0 or config.input_size > 0
+        if total_embedding_dim > 0:
+            self.categorical_modeling = True
+        else:
+            self.categorical_modeling = False
+
+        self.in_proj = nn.Linear(config.input_size or total_embedding_dim, config.hidden_size)
+        if total_embedding_dim == 0:
+            self.out_proj = nn.Linear(config.hidden_size, config.output_size)
+        else:
+            self.out_proj = nn.ModuleList(
+                [nn.Linear(config.hidden_size, num_cats) for num_cats in config.num_categories]
+            )
         self.config = config
         self._num_parameters = None
 
     def forward(
         self,
         attention_mask: Optional[torch.Tensor] = None,
-        inputs: Optional[torch.FloatTensor] = None,
+        inputs: Optional[Union[torch.FloatTensor, torch.LongTensor]] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         # inputs: (batch_size, seq_len, input_size)
+        if not self.categorical_modeling:
+            embedded = [emb(inputs[:, :, i]) for i, emb in enumerate(self.embeddings)]
+            inputs = torch.cat(embedded, dim=-1)
         inputs = self.in_proj(inputs)  # (batch_size, seq_len, hidden_size)
+
         outputs = self.model(inputs_embeds=inputs, attention_mask=attention_mask)
         last_layer_hidden_states = outputs.last_hidden_state
-        prediction = self.out_proj(last_layer_hidden_states)  # (batch_size, seq_len, output_size)
-        return prediction
+        if not self.categorical_modeling:
+            prediction = self.out_proj(
+                last_layer_hidden_states
+            )  # (batch_size, seq_len, output_size)
+            return prediction
+        else:
+            predictions = [
+                proj(last_layer_hidden_states) for proj in self.out_proj
+            ]  # [(batch_size, seq_len, n_classes), ...]
+            return predictions
 
     def num_parameters(self):
         if self._num_parameters is None:
