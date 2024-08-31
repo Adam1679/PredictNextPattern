@@ -9,8 +9,9 @@ data:
  filter_types: null
 model: 
   # !inc training/configs/llama_124M.yaml
-  !inc training/configs/llama_28M.yaml
+  # !inc training/configs/llama_28M.yaml
   # !inc training/configs/llama_9M.yaml
+  !inc training/configs/llama_9M_category.yaml
 
 
 test: 
@@ -20,8 +21,8 @@ test:
 logging: 
  log_interval: 10
  wandb_enabled: True
- wandb_project: cpt_fix
- wandb_run_name: '28M_1h_bsz128_predict_price_larger_range'
+ wandb_project: cpt_fix2
+ wandb_run_name: '9M_1h_bsz128_predict_price_larger_range'
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 

@@ -19,11 +19,24 @@ from training.trainer_ds import (
     get_args,
     get_trainset,
     get_valset,
-    input_output_distribution,
     load_config,
     print_master,
 )
-from training.utils import evaluation_metrics, get_lr
+from training.utils import get_lr
+
+
+def evaluation_metrics(outputs, categorical_labels, mask):
+    # categorical_predictions: (B, T, N)
+    # categorical_labels: (B, T)
+    metrics = []
+    for i, categorical_predictions in enumerate(outputs):
+        pred = categorical_predictions.argmax(dim=-1)  # Shape: [B, T]
+        pred = pred[:, :-1]
+        label = categorical_labels[..., i]  # Shape: [B, T]
+        correct = (pred == label) & mask
+        accuracy = correct.sum().float() / mask.sum()
+        metrics.append({"acc": accuracy})
+    return metrics
 
 
 def validate(model, all_in_one_config):
@@ -39,20 +52,18 @@ def validate(model, all_in_one_config):
         num_workers=all_in_one_config["data"]["num_workers"],
     )
     model.eval()
-    torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     loss_by_target = {
         target_name: torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
         for target_name in valset.NAMES
     }
 
-    model_dtype = next(model.parameters()).dtype
     val_metrics_list = defaultdict(list)
     ce_loss = nn.CrossEntropyLoss()
     with torch.no_grad():
         val_step = 0
         for batch in tqdm(val_dataloader, desc="Validating"):
-            inputs = batch["inputs"] = (
-                batch["inputs"].to(model.device).to(model_dtype)
+            inputs = batch["inputs"] = batch["inputs"].to(
+                model.device
             )  # (batch_size, seq_len, input_size)
             attention_mask = batch["attention_mask"] = batch["attention_mask"].to(
                 model.device
@@ -61,25 +72,24 @@ def validate(model, all_in_one_config):
 
             # Assume the target is the last value in each sequence
             targets = inputs[:, 1:]  # (batch_size, seq_len-1, input_size)
-            # Get the last prediction for each sequence
-            predictions = outputs[:, :-1]  # (batch_size, seq_len-1, output_size)
-            # Create a mask for valid positions (where attention_mask is 1)
-            # Apply the mask to predictions and targets
             valid_positions = attention_mask[:, :-1].bool()
             ce_loss_values = []
-            for i in range(len(model.config.num_categories)):
+            for i in range(len(model.num_categories)):
                 ce_loss_values.append(
                     ce_loss(
-                        outputs[i][valid_positions].view(-1, model.config.num_categories[i]),
-                        targets[valid_positions, i].view(-1),
+                        outputs[i][:, :-1][valid_positions].view(-1, model.num_categories[i]),
+                        targets[:, :, i][valid_positions].view(-1),
                     )
                 )
 
             for i, target_name in enumerate(valset.NAMES):
                 loss_by_target[target_name].add_(ce_loss_values[i])
 
-            val_metrics = evaluation_metrics(predictions, targets, valid_positions)
-            val_metrics = {f"val/{k}": v for k, v in val_metrics.items()}
+            val_metrics_raw = evaluation_metrics(outputs, targets, valid_positions)
+            val_metrics = {}
+            for i, target_name in enumerate(valset.NAMES):
+                for k, v in val_metrics_raw[i].items():
+                    val_metrics[f"val/{k}_{target_name}"] = v
             for k, v in val_metrics.items():
                 val_metrics_list[k].append(v)
             val_step += 1
@@ -116,42 +126,40 @@ def train(
     else:
         prof = None
     model.train()
-    sum_loss = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
+    sum_loss = torch.zeros(
+        len(model.num_categories), device=torch.cuda.current_device(), dtype=torch.float32
+    )
     sum_global_norm = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     total_tokens = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
-    model_dtype = next(model.parameters()).dtype
     global_total_tokens = 0
     ce_loss = nn.CrossEntropyLoss()
     for step, batch in enumerate(train_dataloader):
         t0 = time.time()
         for param_group in optimizer.param_groups:
             param_group["lr"] = get_lr(all_in_one_config, step)
-        inputs = batch["inputs"] = (
-            batch["inputs"].to(model_dtype).to(model.device, non_blocking=True)
+        inputs = batch["inputs"] = batch["inputs"].to(
+            model.device, non_blocking=True
         )  # (batch_size, seq_len, input_size)
         attention_mask = batch["attention_mask"] = batch["attention_mask"].to(
             model.device, non_blocking=True
         )  # (batch_size, seq_len)
         outputs = model(inputs=inputs, attention_mask=attention_mask)
-
         # Assume the target is the last value in each sequence
         targets = inputs[:, 1:]  # (batch_size, seq_len-1, input_size)
-        # Get the last prediction for each sequence
-        predictions = outputs[:, :-1]  # (batch_size, seq_len-1, output_size)
         # Create a mask for valid positions (where attention_mask is 1)
         # Apply the mask to predictions and targets
         valid_positions = attention_mask[:, :-1].bool()
         ce_loss_values = []
-        for i in range(len(model.config.num_categories)):
+        for i in range(len(model.num_categories)):
             ce_loss_values.append(
                 ce_loss(
-                    outputs[i][valid_positions].view(-1, model.config.num_categories[i]),
-                    targets[valid_positions, i].view(-1),
+                    outputs[i][:, :-1][valid_positions].view(-1, model.num_categories[i]),
+                    targets[:, :, i][valid_positions].view(-1),
                 )
             )
 
         loss = sum(ce_loss_values) / len(ce_loss_values)
-
+        target_loss = torch.tensor(ce_loss_values, device=loss.device)
         attention_mask.sum().item()
         model.backward(loss)
         global_norm = model.get_global_grad_norm()
@@ -163,7 +171,7 @@ def train(
         t1 = time.time()
         dt = t1 - t0
         total_tokens.add_(attention_mask.sum().detach().data)
-        sum_loss.add_(loss.detach().data)
+        sum_loss.add_(target_loss.detach().data)
         sum_global_norm.add_(global_norm.detach().data)
         val_interval = all_in_one_config["validation"]["interval"]
         eta = (max_steps - step) * dt
@@ -177,7 +185,7 @@ def train(
             stats.update(
                 {
                     "train/global_step": step,
-                    "train/loss": round(sum_loss.item(), 4),
+                    "train/sum_loss": round(sum_loss.sum().item(), 4),
                     "train/global_grad_norm": round(sum_global_norm.item(), 4),
                     "train/lr": optimizer.param_groups[0]["lr"],
                     "train/time_per_step": round(dt, 4),
@@ -186,17 +194,19 @@ def train(
                     "train/consumed_tokens": int(global_total_tokens),
                 }
             )
+            for i, target_name in enumerate(train_dataloader.dataset.NAMES):
+                stats[f"train/loss_{target_name}"] = round(sum_loss[i].item(), 4)
 
-            eval_metrics = evaluation_metrics(predictions, targets, valid_positions)
-            eval_metrics = {f"train/{k}": v for k, v in eval_metrics.items()}
-            data_stats = input_output_distribution(batch, outputs)
+            # eval_metrics = evaluation_metrics(outputs, targets, valid_positions)
+            # eval_metrics = {f"train/{k}": v for k, v in eval_metrics.items()}
+            # data_stats = input_output_distribution(batch, outputs)
 
             if val_interval > 0 and (step + 1) % val_interval == 0:
                 val_metrics = validate(model, all_in_one_config)
                 stats.update(val_metrics)
 
-            stats.update(data_stats)
-            stats.update(eval_metrics)
+            # stats.update(data_stats)
+            # stats.update(eval_metrics)
             print_master(stats)
 
             if all_in_one_config["logging"]["wandb_enabled"] and RANK == 0:

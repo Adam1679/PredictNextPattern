@@ -433,7 +433,7 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
                 breakout.long(),  # 2
             ],
             dim=1,
-        ).float()
+        ).long()
         item["inputs"] = enhanced_features  # (seq_len, 9)
         return item
 

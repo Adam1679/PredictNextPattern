@@ -16,7 +16,7 @@ class CryptoLlama(LlamaConfig):
         self.input_size = kwargs["input_size"]
         self.output_size = kwargs["output_size"]
         self.categorical_features = kwargs.get("categorical_features", 0)
-        self.embedding_dim = kwargs.get("embedding_dim", 0)
+        self.embedding_dims = kwargs.get("embedding_dims", [])
         self.num_categories = kwargs.get("num_categories", [])  # For each categorical feature
 
 
@@ -31,12 +31,15 @@ class CryptoLlamaModel(nn.Module):
     def __init__(self, config: CryptoLlama):
         super().__init__()
         self.model = LlamaModel(config)
-
+        self.num_categories = config.num_categories
         self.embeddings = nn.ModuleList(
-            [nn.Embedding(num_cats, config.embedding_dim) for num_cats in config.num_categories]
+            [
+                nn.Embedding(num_cats, dim)
+                for num_cats, dim in zip(config.num_categories, config.embedding_dims)
+            ]
         )
         # Adjust input size to account for embeddings
-        total_embedding_dim = config.embedding_dim * len(config.num_categories)
+        total_embedding_dim = sum(config.embedding_dims)
 
         assert total_embedding_dim > 0 or config.input_size > 0
         if total_embedding_dim > 0:
@@ -60,9 +63,11 @@ class CryptoLlamaModel(nn.Module):
         inputs: Optional[Union[torch.FloatTensor, torch.LongTensor]] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         # inputs: (batch_size, seq_len, input_size)
-        if not self.categorical_modeling:
+
+        if self.categorical_modeling:
             embedded = [emb(inputs[:, :, i]) for i, emb in enumerate(self.embeddings)]
             inputs = torch.cat(embedded, dim=-1)
+
         inputs = self.in_proj(inputs)  # (batch_size, seq_len, hidden_size)
 
         outputs = self.model(inputs_embeds=inputs, attention_mask=attention_mask)
