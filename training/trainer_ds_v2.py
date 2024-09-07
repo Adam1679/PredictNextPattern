@@ -249,18 +249,22 @@ def train(
             # stats.update(eval_metrics)
             print_master(stats)
             if "bar_pct_change" in batch:
-                stats["bar_pct_change_max"] = torch.max(batch["bar_pct_change"]).item()
-                stats["bar_pct_change_min"] = torch.min(batch["bar_pct_change"]).item()
-                stats["bar_pct_change_mean"] = torch.mean(batch["bar_pct_change"]).item()
+                bar_pct_change = torch.tensor(batch["bar_pct_change"])
+                stats["bar_pct_change_max"] = bar_pct_change.item()
+                stats["bar_pct_change_min"] = bar_pct_change.item()
+                stats["bar_pct_change_mean"] = bar_pct_change.item()
             if "low_bigger_than_high_error_sum" in batch:
-                stats["low_bigger_than_high_error_sum_max"] = torch.max(
+                low_bigger_than_high_error_sum_max = torch.tensor(
                     batch["low_bigger_than_high_error_sum"]
+                )
+                stats["low_bigger_than_high_error_sum_max"] = torch.max(
+                    low_bigger_than_high_error_sum_max
                 ).item()
                 stats["low_bigger_than_high_error_sum_min"] = torch.min(
-                    batch["low_bigger_than_high_error_sum"]
+                    low_bigger_than_high_error_sum_max
                 ).item()
                 stats["low_bigger_than_high_error_sum_mean"] = torch.mean(
-                    batch["low_bigger_than_high_error_sum"]
+                    low_bigger_than_high_error_sum_max
                 ).item()
 
             if all_in_one_config["logging"]["wandb_enabled"] and RANK == 0:
