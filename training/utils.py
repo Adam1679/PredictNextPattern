@@ -141,6 +141,19 @@ def evaluation_metrics_single(predictions, labels, mask):
     return metrics
 
 
+def keep_rightmost_k_ones(mask, k=10):
+    # Get the cumulative sum from right to left
+    cumsum = torch.fliplr(torch.cumsum(torch.fliplr(mask), dim=1))
+
+    # Create a boolean mask for the rightmost k ones
+    rightmost_k_mask = cumsum <= k
+
+    # Apply the mask to the original tensor
+    result = mask * rightmost_k_mask.to(mask.dtype)
+
+    return result
+
+
 def evaluation_metrics(predictions, labels, mask):
     all_metrics = {}
     for i, name in enumerate(["open", "high", "low", "close"]):

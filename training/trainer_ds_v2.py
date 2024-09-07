@@ -22,7 +22,7 @@ from training.trainer_ds import (
     load_config,
     print_master,
 )
-from training.utils import get_lr
+from training.utils import get_lr, keep_rightmost_k_ones
 
 
 def input_output_distribution(batch, outputs, names, mask):
@@ -67,6 +67,15 @@ def evaluation_metrics(outputs, categorical_labels, mask):
             recall = TP / (TP + FN)
             scores["precision"] = precision
             scores["recall"] = recall
+            for k in [10, 50, 100]:
+                k_mask = keep_rightmost_k_ones(mask, k)
+                TP = (pred * label * k_mask).sum().float()
+                FP = (pred * (1 - label) * k_mask).sum().float()
+                FN = ((1 - pred) * label * k_mask).sum().float()
+                precision = TP / (TP + FP)
+                recall = TP / (TP + FN)
+                scores[f"precision_{k}"] = precision
+                scores[f"recall_{k}"] = recall
 
         correct = (pred == label) & mask
         accuracy = correct.sum().float() / mask.sum()
