@@ -54,7 +54,7 @@ class OHLCDatasetMmap(IterableDataset):
         sample_n=None,
         rank=0,
         world_size=1,
-        clip=(-50, 50),
+        clip=(-10, 10),
         normalize_rescale_price=True,
     ):
         self.window_range = window_range
