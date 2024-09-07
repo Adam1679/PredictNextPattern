@@ -18,6 +18,7 @@ class CryptoLlama(LlamaConfig):
         self.categorical_features = kwargs.get("categorical_features", 0)
         self.embedding_dims = kwargs.get("embedding_dims", [])
         self.num_categories = kwargs.get("num_categories", [])  # For each categorical feature
+        self.dropout = kwargs.get("dropout", 0)
 
 
 class CryptoLlamaModel(nn.Module):
@@ -48,6 +49,7 @@ class CryptoLlamaModel(nn.Module):
             self.categorical_modeling = False
 
         self.in_proj = nn.Linear(config.input_size or total_embedding_dim, config.hidden_size)
+
         if total_embedding_dim == 0:
             self.out_proj = nn.Linear(config.hidden_size, config.output_size)
         else:
@@ -55,6 +57,10 @@ class CryptoLlamaModel(nn.Module):
                 [nn.Linear(config.hidden_size, num_cats) for num_cats in config.num_categories]
             )
         self.config = config
+        if config.dropout > 0:
+            self.dropout = nn.Dropout(config.dropout)  # Add dropout layer
+        else:
+            self.dropout = None
         self._num_parameters = None
 
     def forward(
@@ -69,7 +75,8 @@ class CryptoLlamaModel(nn.Module):
             inputs = torch.cat(embedded, dim=-1)
 
         inputs = self.in_proj(inputs)  # (batch_size, seq_len, hidden_size)
-
+        if self.dropout:
+            inputs = self.dropout(inputs)  # Apply dropout after input projection
         outputs = self.model(inputs_embeds=inputs, attention_mask=attention_mask)
         last_layer_hidden_states = outputs.last_hidden_state
         if not self.categorical_modeling:

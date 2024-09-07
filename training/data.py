@@ -134,10 +134,7 @@ class OHLCDatasetMmap(IterableDataset):
             if sample_per_worker is not None and i > sample_per_worker:
                 break
             while True:
-                element = self.__getitem__(randint)
-                if element:
-                    yield element
-                randint = rng.randint(worker_start, worker_end - 1)
+                yield self.__getitem__(randint)
             i += 1
 
     @staticmethod
@@ -251,7 +248,12 @@ class OHLCDatasetMmap(IterableDataset):
             "attention_mask": stacked_attention_masks,
             "index": [item["index"] for item in batch],
         }
-
+        if "bar_pct_change" in batch[0]:
+            batched_inputs["bar_pct_change"] = [item["bar_pct_change"] for item in batch]
+        if "low_bigger_than_high_error_sum" in batch[0]:
+            batched_inputs["low_bigger_than_high_error_sum"] = [
+                item["low_bigger_than_high_error_sum"] for item in batch
+            ]
         return batched_inputs
 
     def plot_kline(self, index, output_file=""):
@@ -346,13 +348,8 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
         # 1. Boolean feature for moving up or down
         moving_up = torch.zeros(ohlc.shape[0], dtype=torch.bool)
         moving_up[1:] = ohlc[1:, 3] > ohlc[:-1, 3]  # Compare current close to previous close
-        if torch.any(ohlc[:, 1] < ohlc[:, 2]):
-            # if high < low, error data
-            return None
-        max_pct_change = torch.max((ohlc[:, 1] - ohlc[:, 2]) / ohlc[:, 0])  # (high - low) / open
-        if max_pct_change > 2:
-            # if too valatile, likely error data.
-            return None
+        low_bigger_than_high_error_sum = torch.sum((ohlc[:, 1] < ohlc[:, 2]).float())
+        bar_pct_change = torch.max((ohlc[:, 1] - ohlc[:, 2]) / ohlc[:, 0])  # (high - low) / open
         # print('moving_up', moving_up[:10])
         # 2. Higher high or lower high
         higher_high = torch.zeros(ohlc.shape[0], dtype=torch.bool)
@@ -446,6 +443,8 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
             dim=1,
         ).long()
         item["inputs"] = enhanced_features  # (seq_len, 9)
+        item["bar_pct_change"] = bar_pct_change
+        item["low_bigger_than_high_error_sum"] = low_bigger_than_high_error_sum
         return item
 
 

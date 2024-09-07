@@ -16,7 +16,8 @@ model:
   # !inc training/configs/llama_28M.yaml
   # !inc training/configs/llama_9M.yaml
   # !inc training/configs/llama_9M_category.yaml
-  !inc training/configs/llama_28M_category.yaml
+  # !inc training/configs/llama_28M_category.yaml
+  !inc training/configs/llama_28M_category_dropout.yaml
   # !inc training/configs/llama_124M_category.yaml
 
 
@@ -28,7 +29,7 @@ logging:
  log_interval: 10
  wandb_enabled: True
  wandb_project: cpt_fix2
- wandb_run_name: '28M_20k_steps_multi_interval_bsz128_data_drop'
+ wandb_run_name: '28M_20k_steps_multi_interval_bsz128_dropout'
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 
