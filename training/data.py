@@ -135,7 +135,7 @@ class OHLCDatasetMmap(IterableDataset):
                 break
             while True:
                 element = self.__getitem__(randint)
-                if not element:
+                if element:
                     yield element
                 randint = rng.randint(worker_start, worker_end - 1)
             i += 1
