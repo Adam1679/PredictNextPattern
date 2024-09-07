@@ -25,6 +25,31 @@ from training.trainer_ds import (
 from training.utils import get_lr
 
 
+def input_output_distribution(batch, outputs, names, mask):
+    """
+    Compute the distribution of inputs and outputs
+    mask: (B, T)
+    """
+    metrics = {}
+    mask = mask.bool()
+    inputs = batch["inputs"]  # (B, T, D)
+    for i, target_name in enumerate(names):
+        input_value = inputs[:, :, i][mask].float()
+        input_mean = input_value.mean().item()
+        input_max = input_value.max().item()
+        input_min = input_value.min().item()
+        metrics[f"data/input_{target_name}_mean"] = round(input_mean, 4)
+        metrics[f"data/input_{target_name}_max"] = round(input_max, 4)
+        metrics[f"data/input_{target_name}_min"] = round(input_min, 4)
+
+        output_logits = outputs[i][mask]  # (B, T)
+        metrics[f"data/output_{target_name}_mean"] = round(output_logits.mean().item(), 4)
+        metrics[f"data/output_{target_name}_max"] = round(output_logits.max().item(), 4)
+        metrics[f"data/output_{target_name}_min"] = round(output_logits.min().item(), 4)
+
+    return metrics
+
+
 def evaluation_metrics(outputs, categorical_labels, mask):
     # categorical_predictions: (B, T, N)
     # categorical_labels: (B, T)
@@ -33,9 +58,22 @@ def evaluation_metrics(outputs, categorical_labels, mask):
         pred = categorical_predictions.argmax(dim=-1)  # Shape: [B, T]
         pred = pred[:, :-1]
         label = categorical_labels[..., i]  # Shape: [B, T]
+        scores = {}
+        if i in {5, 6, 8}:
+            TP = (pred * label * mask).sum().float()
+            FP = (pred * (1 - label) * mask).sum().float()
+            FN = ((1 - pred) * label * mask).sum().float()
+            precision = TP / (TP + FP)
+            recall = TP / (TP + FN)
+            scores["precision"] = precision
+            scores["recall"] = recall
+
         correct = (pred == label) & mask
         accuracy = correct.sum().float() / mask.sum()
-        metrics.append({"acc": accuracy})
+        scores["acc"] = accuracy
+        metrics.append(scores)
+
+    # Calculate True Positives (TP), False Positives (FP), False Negatives (FN) for both up and down
     return metrics
 
 
@@ -199,13 +237,15 @@ def train(
 
             # eval_metrics = evaluation_metrics(outputs, targets, valid_positions)
             # eval_metrics = {f"train/{k}": v for k, v in eval_metrics.items()}
-            # data_stats = input_output_distribution(batch, outputs)
+            data_stats = input_output_distribution(
+                batch, outputs, train_dataloader.dataset.NAMES, attention_mask
+            )
 
             if val_interval > 0 and (step + 1) % val_interval == 0:
                 val_metrics = validate(model, all_in_one_config)
                 stats.update(val_metrics)
 
-            # stats.update(data_stats)
+            stats.update(data_stats)
             # stats.update(eval_metrics)
             print_master(stats)
 

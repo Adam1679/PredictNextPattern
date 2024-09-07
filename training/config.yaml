@@ -2,16 +2,22 @@ data:
  version: 1
  data_root: memmap_dataset
  max_seq_len: &seq_len 2048
- min_seq_len: 128
- num_workers: 4
+ min_seq_len: 1024
+ num_workers: 8
  filter_symbols: null
- filter_intervals: '1h'
+ filter_intervals: 
+  - '1h'
+  - '30m'
+  - '15m'
+  - '5m'
  filter_types: null
 model: 
   # !inc training/configs/llama_124M.yaml
   # !inc training/configs/llama_28M.yaml
   # !inc training/configs/llama_9M.yaml
-  !inc training/configs/llama_9M_category.yaml
+  # !inc training/configs/llama_9M_category.yaml
+  !inc training/configs/llama_28M_category.yaml
+  # !inc training/configs/llama_124M_category.yaml
 
 
 test: 
@@ -22,12 +28,12 @@ logging:
  log_interval: 10
  wandb_enabled: True
  wandb_project: cpt_fix2
- wandb_run_name: '9M_1h_bsz128_predict_price_larger_range'
+ wandb_run_name: '28M_20k_steps_multi_interval_bsz128_data_drop'
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 
  batch_size: &bsz 128
- total_steps: &steps 6666
+ total_steps: &steps 20_000
  lr: 0.001
  min_lr: 0.0001
  weight_decay: 0.01

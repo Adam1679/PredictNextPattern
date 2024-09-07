@@ -133,7 +133,11 @@ class OHLCDatasetMmap(IterableDataset):
             randint = rng.randint(worker_start, worker_end - 1)
             if sample_per_worker is not None and i > sample_per_worker:
                 break
-            yield self.__getitem__(randint)
+            while True:
+                element = self.__getitem__(randint)
+                if not element:
+                    yield element
+                randint = rng.randint(worker_start, worker_end - 1)
             i += 1
 
     @staticmethod
@@ -320,7 +324,7 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
         "body_ratio_buckets",
         "bar_height_atr_buckets",
         "higher_high",
-        "higher_low",
+        "lower_low",
         "bollinger_buckets",
         "breakout",
     ]
@@ -342,15 +346,22 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
         # 1. Boolean feature for moving up or down
         moving_up = torch.zeros(ohlc.shape[0], dtype=torch.bool)
         moving_up[1:] = ohlc[1:, 3] > ohlc[:-1, 3]  # Compare current close to previous close
+        if torch.any(ohlc[:, 1] < ohlc[:, 2]):
+            # if high < low, error data
+            return None
+        max_pct_change = torch.max((ohlc[:, 1] - ohlc[:, 2]) / ohlc[:-1, 0])  # (high - low) / open
+        if max_pct_change > 2:
+            # if too valatile, likely error data.
+            return None
         # print('moving_up', moving_up[:10])
         # 2. Higher high or lower high
         higher_high = torch.zeros(ohlc.shape[0], dtype=torch.bool)
         higher_high[1:] = ohlc[1:, 1] > ohlc[:-1, 1]  # Compare current high to previous high
         # print('higher_high', higher_high[:10])
         # 3. Higher low or lower low
-        higher_low = torch.zeros(ohlc.shape[0], dtype=torch.bool)
-        higher_low[1:] = ohlc[1:, 2] > ohlc[:-1, 2]  # Compare current low to previous low
-        # print('higher_low', higher_low[:10])
+        lower_low = torch.zeros(ohlc.shape[0], dtype=torch.bool)
+        lower_low[1:] = ohlc[1:, 2] < ohlc[:-1, 2]  # Compare current low to previous low
+        # print('lower_low', lower_low[:10])
         # 4. Breakout of 20 rolling window high or low
         breakout = torch.zeros(ohlc.shape[0], dtype=torch.bool)
         window_high = torch.zeros(ohlc.shape[0], dtype=torch.float32)
@@ -428,7 +439,7 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
                 bar_height_atr_buckets,  # 6
                 # 市场结构
                 higher_high.long(),  # 2
-                higher_low.long(),  # 2
+                lower_low.long(),  # 2
                 bollinger_buckets,  # 6
                 breakout.long(),  # 2
             ],
