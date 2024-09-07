@@ -349,7 +349,7 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
         if torch.any(ohlc[:, 1] < ohlc[:, 2]):
             # if high < low, error data
             return None
-        max_pct_change = torch.max((ohlc[:, 1] - ohlc[:, 2]) / ohlc[:-1, 0])  # (high - low) / open
+        max_pct_change = torch.max((ohlc[:, 1] - ohlc[:, 2]) / ohlc[:, 0])  # (high - low) / open
         if max_pct_change > 2:
             # if too valatile, likely error data.
             return None
