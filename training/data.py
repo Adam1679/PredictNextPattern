@@ -133,8 +133,7 @@ class OHLCDatasetMmap(IterableDataset):
             randint = rng.randint(worker_start, worker_end - 1)
             if sample_per_worker is not None and i > sample_per_worker:
                 break
-            while True:
-                yield self.__getitem__(randint)
+            yield self.__getitem__(randint)
             i += 1
 
     @staticmethod
@@ -349,7 +348,7 @@ class EnhancedOHLCDataset(OHLCDatasetMmap):
         moving_up = torch.zeros(ohlc.shape[0], dtype=torch.bool)
         moving_up[1:] = ohlc[1:, 3] > ohlc[:-1, 3]  # Compare current close to previous close
         low_bigger_than_high_error_sum = torch.sum((ohlc[:, 1] < ohlc[:, 2]).float())
-        bar_pct_change = torch.max((ohlc[:, 1] - ohlc[:, 2]) / ohlc[:, 0])  # (high - low) / open
+        bar_pct_change = torch.max((ohlc[:, 1] - ohlc[:, 2]))  # (high - low) / open
         # print('moving_up', moving_up[:10])
         # 2. Higher high or lower high
         higher_high = torch.zeros(ohlc.shape[0], dtype=torch.bool)
@@ -472,7 +471,7 @@ def sample_one():
     dataset = EnhancedOHLCDataset(
         "memmap_dataset", window_range=(128, 512), is_train=True, filter_intervals="1h"
     )
-    print(dataset[100])
+    print(dataset[1000])
 
 
 if __name__ == "__main__":
