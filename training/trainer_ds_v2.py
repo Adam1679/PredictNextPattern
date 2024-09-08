@@ -167,15 +167,17 @@ def validate(model, all_in_one_config):
                 if IS_DECODER_ONLY:
                     ce_loss_values.append(
                         ce_loss(
-                            outputs[i][:, :-1],
-                            targets[:, :, i],
+                            outputs[i][:, :-1][attention_mask[:, :-1].bool()].reshape(
+                                -1, model.num_categories[i]
+                            ),
+                            targets[..., i][attention_mask[:, :-1].bool()].reshape(-1),
                         )
                     )
                 else:
                     ce_loss_values.append(
                         ce_loss(
-                            outputs[i],
-                            targets[:, :, i],
+                            outputs[i].reshape(-1, model.num_categories[i]),
+                            targets[..., i].reshape(-1),
                         )
                     )
 
@@ -230,7 +232,7 @@ def train(
     sum_global_norm = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     total_tokens = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     global_total_tokens = 0
-    z_reg = all_in_one_config["optimization"]["z_reg"]
+    z_reg = all_in_one_config["optimizer"]["z_reg"]
     ce_loss = nn.CrossEntropyLoss() if z_reg == 0 else partial(compute_nll_with_z_reg, z_reg=z_reg)
     for step, batch in enumerate(train_dataloader):
         t0 = time.time()
