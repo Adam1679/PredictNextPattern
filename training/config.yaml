@@ -1,15 +1,14 @@
 data:
  version: 1
  data_root: memmap_dataset
- max_seq_len: &seq_len 2048
- min_seq_len: 1024
+ max_seq_len: &seq_len 512
+ min_seq_len: 512
  num_workers: 4
  filter_symbols: null
  filter_intervals: 
   - '1h'
   - '30m'
   - '15m'
-  - '5m'
  filter_types: null
 model: 
   # !inc training/configs/llama_124M.yaml
@@ -17,8 +16,9 @@ model:
   # !inc training/configs/llama_9M.yaml
   # !inc training/configs/llama_9M_category.yaml
   # !inc training/configs/llama_28M_category.yaml
-  !inc training/configs/llama_28M_category_dropout.yaml
+  # !inc training/configs/llama_28M_category_dropout.yaml
   # !inc training/configs/llama_124M_category.yaml
+  !inc training/configs/t5_9M_category.yaml
 
 
 test: 
@@ -29,7 +29,7 @@ logging:
  log_interval: 10
  wandb_enabled: True
  wandb_project: cpt_fix2
- wandb_run_name: '28M_20k_steps_multi_interval_bsz128_dropout'
+ wandb_run_name: '9M_t5_10k_steps_multi_interval_bsz256'
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 
@@ -39,13 +39,14 @@ optimizer:
  min_lr: 0.0001
  weight_decay: 0.01
  warmup_steps: 256
+ z_reg: 0.0
 
 validation: 
  interval: 200
- sample_n: 100000
+ sample_n: 50000
  batch_size: *bsz
  filter_symbols: null
- filter_intervals: ['1h', '30m', '15m', '5m']
+ filter_intervals: ['1h', '30m', '15m']
 
 checkpointing: 
  dir: checkpoints

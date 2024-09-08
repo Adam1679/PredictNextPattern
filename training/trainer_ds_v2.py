@@ -1,6 +1,7 @@
 import json
 import time
 from collections import defaultdict
+from functools import partial
 
 import deepspeed
 import torch
@@ -24,6 +25,18 @@ from training.trainer_ds import (
 )
 from training.utils import get_lr, keep_rightmost_k_ones
 
+IS_DECODER_ONLY = True
+
+
+def compute_nll_with_z_reg(logits, labels, z_reg=0):
+    vocab_size = logits.shape[-1]
+    log_z = torch.logsumexp(logits, dim=-1)
+    log_softmax = logits - log_z.unsqueeze(len(log_z.shape))
+    labels_onehot = torch.nn.functional.one_hot(labels, vocab_size)
+    loss = -(log_softmax * labels_onehot).sum(-1)
+    loss += z_reg * (log_z**2)
+    return loss
+
 
 def input_output_distribution(batch, outputs, names, mask):
     """
@@ -42,7 +55,10 @@ def input_output_distribution(batch, outputs, names, mask):
         metrics[f"data/input_{target_name}_max"] = round(input_max, 4)
         metrics[f"data/input_{target_name}_min"] = round(input_min, 4)
 
-        output_logits = outputs[i][mask]  # (B, T)
+        if IS_DECODER_ONLY:
+            output_logits = outputs[i][mask]  # (B, T)
+        else:
+            output_logits = outputs[i].reshape(-1)
         metrics[f"data/output_{target_name}_mean"] = round(output_logits.mean().item(), 4)
         metrics[f"data/output_{target_name}_max"] = round(output_logits.max().item(), 4)
         metrics[f"data/output_{target_name}_min"] = round(output_logits.min().item(), 4)
@@ -50,13 +66,19 @@ def input_output_distribution(batch, outputs, names, mask):
     return metrics
 
 
-def evaluation_metrics(outputs, categorical_labels, mask):
-    # categorical_predictions: (B, T, N)
-    # categorical_labels: (B, T)
+def evaluation_metrics(outputs, categorical_labels, mask=None):
+    # outputs: K x (B, T, N)
+    # categorical_labels: (B, T, K)
+    if mask is None:
+        B = categorical_labels.shape[0]
+        T = categorical_labels.shape[1]
+        mask = torch.ones((B, T), device=categorical_labels.device)
     metrics = []
     for i, categorical_predictions in enumerate(outputs):
         pred = categorical_predictions.argmax(dim=-1)  # Shape: [B, T]
-        pred = pred[:, :-1]
+        if IS_DECODER_ONLY:
+            pred = pred[:, :-1]
+
         label = categorical_labels[..., i]  # Shape: [B, T]
         scores = {}
         if i in {5, 6, 8}:
@@ -67,15 +89,16 @@ def evaluation_metrics(outputs, categorical_labels, mask):
             recall = TP / (TP + FN)
             scores["precision"] = precision
             scores["recall"] = recall
-            for k in [10, 50, 100]:
-                k_mask = keep_rightmost_k_ones(mask, k)
-                TP = (pred * label * k_mask).sum().float()
-                FP = (pred * (1 - label) * k_mask).sum().float()
-                FN = ((1 - pred) * label * k_mask).sum().float()
-                precision = TP / (TP + FP)
-                recall = TP / (TP + FN)
-                scores[f"precision_{k}"] = precision
-                scores[f"recall_{k}"] = recall
+            if IS_DECODER_ONLY:
+                for k in [10, 50, 100]:
+                    k_mask = keep_rightmost_k_ones(mask, k)
+                    TP = (pred * label * k_mask).sum().float()
+                    FP = (pred * (1 - label) * k_mask).sum().float()
+                    FN = ((1 - pred) * label * k_mask).sum().float()
+                    precision = TP / (TP + FP)
+                    recall = TP / (TP + FN)
+                    scores[f"precision_{k}"] = precision
+                    scores[f"recall_{k}"] = recall
 
         correct = (pred == label) & mask
         accuracy = correct.sum().float() / mask.sum()
@@ -115,24 +138,52 @@ def validate(model, all_in_one_config):
             attention_mask = batch["attention_mask"] = batch["attention_mask"].to(
                 model.device
             )  # (batch_size, seq_len)
-            outputs = model(inputs=inputs, attention_mask=attention_mask)
+            if IS_DECODER_ONLY:
+                input_valid_positions = attention_mask[:, :-1].bool()
+                outputs = model(inputs=inputs, attention_mask=attention_mask)
+                # Assume the target is the last value in each sequence
+                targets = inputs[:, 1:].detach()  # (batch_size, seq_len-1, input_size)
+                targets.requires_grad = False
+                targets[~input_valid_positions] = -100
+            else:
+                prediction_length = all_in_one_config["model"]["prediction_length"]
+                targets = inputs[:, -prediction_length:].detach()
+                inputs = inputs[:, :-prediction_length]
+                targets.requires_grad = False
+                decoder_attention_mask = attention_mask[:, :-prediction_length]
+                decoder_inputs = targets.roll(1, dims=1)
+                decoder_inputs[:, 0] = 0
+                outputs = model(
+                    inputs=inputs,
+                    attention_mask=decoder_attention_mask,
+                    decoder_inputs=decoder_inputs,
+                )
 
             # Assume the target is the last value in each sequence
             targets = inputs[:, 1:]  # (batch_size, seq_len-1, input_size)
-            valid_positions = attention_mask[:, :-1].bool()
+            input_valid_positions = attention_mask[:, :-1].bool()
             ce_loss_values = []
             for i in range(len(model.num_categories)):
-                ce_loss_values.append(
-                    ce_loss(
-                        outputs[i][:, :-1][valid_positions].view(-1, model.num_categories[i]),
-                        targets[:, :, i][valid_positions].view(-1),
+                if IS_DECODER_ONLY:
+                    ce_loss_values.append(
+                        ce_loss(
+                            outputs[i][:, :-1],
+                            targets[:, :, i],
+                        )
                     )
-                )
+                else:
+                    ce_loss_values.append(
+                        ce_loss(
+                            outputs[i],
+                            targets[:, :, i],
+                        )
+                    )
 
             for i, target_name in enumerate(valset.NAMES):
                 loss_by_target[target_name].add_(ce_loss_values[i])
-
-            val_metrics_raw = evaluation_metrics(outputs, targets, valid_positions)
+            val_metrics_raw = evaluation_metrics(
+                outputs, targets, input_valid_positions if IS_DECODER_ONLY else None
+            )
             val_metrics = {}
             for i, target_name in enumerate(valset.NAMES):
                 for k, v in val_metrics_raw[i].items():
@@ -179,7 +230,8 @@ def train(
     sum_global_norm = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     total_tokens = torch.zeros((), device=torch.cuda.current_device(), dtype=torch.float32)
     global_total_tokens = 0
-    ce_loss = nn.CrossEntropyLoss()
+    z_reg = all_in_one_config["optimization"]["z_reg"]
+    ce_loss = nn.CrossEntropyLoss() if z_reg == 0 else partial(compute_nll_with_z_reg, z_reg=z_reg)
     for step, batch in enumerate(train_dataloader):
         t0 = time.time()
         for param_group in optimizer.param_groups:
@@ -190,23 +242,49 @@ def train(
         attention_mask = batch["attention_mask"] = batch["attention_mask"].to(
             model.device, non_blocking=True
         )  # (batch_size, seq_len)
-        outputs = model(inputs=inputs, attention_mask=attention_mask)
-        # Assume the target is the last value in each sequence
-        targets = inputs[:, 1:]  # (batch_size, seq_len-1, input_size)
-        # Create a mask for valid positions (where attention_mask is 1)
-        # Apply the mask to predictions and targets
-        valid_positions = attention_mask[:, :-1].bool()
-        ce_loss_values = []
-        for i in range(len(model.num_categories)):
-            ce_loss_values.append(
-                ce_loss(
-                    outputs[i][:, :-1][valid_positions].view(-1, model.num_categories[i]),
-                    targets[:, :, i][valid_positions].view(-1),
-                )
+        if IS_DECODER_ONLY:
+            attention_mask[:, :-1].bool()
+            outputs = model(inputs=inputs, attention_mask=attention_mask)
+            # Assume the target is the last value in each sequence
+            targets = inputs[:, 1:].detach()  # (batch_size, seq_len-1, input_size)
+            # targets.requires_grad = False
+            # targets[~input_valid_positions] = -100
+        else:
+            prediction_length = all_in_one_config["model"]["prediction_length"]
+            targets = inputs[:, -prediction_length:].detach()
+            inputs = inputs[:, :-prediction_length]
+            targets.requires_grad = False
+            decoder_attention_mask = attention_mask[:, :-prediction_length]
+            decoder_inputs = targets.roll(1, dims=1)
+            decoder_inputs[:, 0] = 0
+            outputs = model(
+                inputs=inputs, attention_mask=decoder_attention_mask, decoder_inputs=decoder_inputs
             )
 
+        # Create a mask for valid positions (where attention_mask is 1)
+        # Apply the mask to predictions and targets
+
+        ce_loss_values = []
+        for i in range(len(model.num_categories)):
+            if IS_DECODER_ONLY:
+                ce_loss_values.append(
+                    ce_loss(
+                        outputs[i][:, :-1][attention_mask[:, :-1].bool()].reshape(
+                            -1, model.num_categories[i]
+                        ),
+                        targets[..., i][attention_mask[:, :-1].bool()].reshape(-1),
+                    )
+                )
+            else:
+                ce_loss_values.append(
+                    ce_loss(
+                        outputs[i].reshape(-1, model.num_categories[i]),
+                        targets[..., i].reshape(-1),
+                    )
+                )
+
         loss = sum(ce_loss_values) / len(ce_loss_values)
-        target_loss = torch.tensor(ce_loss_values, device=loss.device)
+        loss_per_taget = torch.tensor(ce_loss_values, device=loss.device)
         attention_mask.sum().item()
         model.backward(loss)
         global_norm = model.get_global_grad_norm()
@@ -218,7 +296,7 @@ def train(
         t1 = time.time()
         dt = t1 - t0
         total_tokens.add_(attention_mask.sum().detach().data)
-        sum_loss.add_(target_loss.detach().data)
+        sum_loss.add_(loss_per_taget.detach().data)
         sum_global_norm.add_(global_norm.detach().data)
         val_interval = all_in_one_config["validation"]["interval"]
         eta = (max_steps - step) * dt
@@ -244,7 +322,7 @@ def train(
             for i, target_name in enumerate(train_dataloader.dataset.NAMES):
                 stats[f"train/loss_{target_name}"] = round(sum_loss[i].item(), 4)
 
-            # eval_metrics = evaluation_metrics(outputs, targets, valid_positions)
+            # eval_metrics = evaluation_metrics(outputs, targets, input_valid_positions)
             # eval_metrics = {f"train/{k}": v for k, v in eval_metrics.items()}
             data_stats = input_output_distribution(
                 batch, outputs, train_dataloader.dataset.NAMES, attention_mask
@@ -336,6 +414,8 @@ def main():
                 CryptoLlamaModel(model_config).to(torch.bfloat16).to(torch.cuda.current_device())
             )
         elif model_type == "t5":
+            global IS_DECODER_ONLY
+            IS_DECODER_ONLY = False
             model_config = CryptoT5Config(**all_in_one_config["model"])
             model = CryptoT5Model(model_config).to(torch.bfloat16).to(torch.cuda.current_device())
         else:
@@ -347,7 +427,7 @@ def main():
 
     # DeepSpeed configuration
     ds_config = all_in_one_config["distributed"]
-    model = torch.compile(model)
+    # model = torch.compile(model)
     # Initialize DeepSpeed
     model_engine, optimizer, _, _ = deepspeed.initialize(
         model=model, optimizer=optimizer, config=ds_config

@@ -56,6 +56,7 @@ class OHLCDatasetMmap(IterableDataset):
         world_size=1,
         clip=(-10, 10),
         normalize_rescale_price=True,
+        prediction_window=-1,
     ):
         self.window_range = window_range
         self.rank = rank
@@ -68,6 +69,7 @@ class OHLCDatasetMmap(IterableDataset):
         self.random_seed = random_seed
         self.rng = random.Random(random_seed)
         self.clip = clip
+        self.prediction_window = prediction_window
         self.normalize_rescale_price = normalize_rescale_price
         if not os.path.exists(os.path.join(data_root, "metadata.json")):
             raise ValueError("metadata.json not found in {}".format(data_root))
@@ -217,12 +219,12 @@ class OHLCDatasetMmap(IterableDataset):
                     dtype=seq.dtype,
                     device=seq.device,
                 )
-                padded_seq = torch.cat([seq, padding], dim=0)
+                padded_seq = torch.cat([padding, seq], dim=0)
                 # Update attention mask
                 attention_mask = torch.cat(
                     [
-                        attention_mask,
                         torch.zeros(max_len - seq_len, dtype=torch.long, device=seq.device),
+                        attention_mask,
                     ],
                     dim=0,
                 )
