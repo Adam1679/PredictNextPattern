@@ -139,12 +139,10 @@ def validate(model, all_in_one_config):
                 model.device
             )  # (batch_size, seq_len)
             if IS_DECODER_ONLY:
-                input_valid_positions = attention_mask[:, :-1].bool()
+                attention_mask[:, :-1].bool()
                 outputs = model(inputs=inputs, attention_mask=attention_mask)
                 # Assume the target is the last value in each sequence
                 targets = inputs[:, 1:].detach()  # (batch_size, seq_len-1, input_size)
-                targets.requires_grad = False
-                targets[~input_valid_positions] = -100
             else:
                 prediction_length = all_in_one_config["model"]["prediction_length"]
                 targets = inputs[:, -prediction_length:].detach()
@@ -249,8 +247,6 @@ def train(
             outputs = model(inputs=inputs, attention_mask=attention_mask)
             # Assume the target is the last value in each sequence
             targets = inputs[:, 1:].detach()  # (batch_size, seq_len-1, input_size)
-            # targets.requires_grad = False
-            # targets[~input_valid_positions] = -100
         else:
             prediction_length = all_in_one_config["model"]["prediction_length"]
             targets = inputs[:, -prediction_length:].detach()
