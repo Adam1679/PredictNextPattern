@@ -72,7 +72,7 @@ def evaluation_metrics(outputs, categorical_labels, mask=None):
     if mask is None:
         B = categorical_labels.shape[0]
         T = categorical_labels.shape[1]
-        mask = torch.ones((B, T), device=categorical_labels.device)
+        mask = torch.ones((B, T), device=categorical_labels.device).bool()
     metrics = []
     for i, categorical_predictions in enumerate(outputs):
         pred = categorical_predictions.argmax(dim=-1)  # Shape: [B, T]
@@ -157,8 +157,6 @@ def validate(model, all_in_one_config):
                     decoder_inputs=decoder_inputs,
                 )
 
-            # Assume the target is the last value in each sequence
-            targets = inputs[:, 1:]  # (batch_size, seq_len-1, input_size)
             input_valid_positions = attention_mask[:, :-1].bool()
             ce_loss_values = []
             for i in range(len(model.num_categories)):
