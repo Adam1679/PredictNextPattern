@@ -35,6 +35,7 @@ def compute_nll_with_z_reg(logits, labels, z_reg=0):
     labels_onehot = torch.nn.functional.one_hot(labels, vocab_size)
     loss = -(log_softmax * labels_onehot).sum(-1)
     loss += z_reg * (log_z**2)
+    loss = loss.mean()
     return loss
 
 
@@ -90,7 +91,7 @@ def evaluation_metrics(outputs, categorical_labels, mask=None):
             scores["precision"] = precision
             scores["recall"] = recall
             if IS_DECODER_ONLY:
-                for k in [10, 50, 100]:
+                for k in [32, 64]:
                     k_mask = keep_rightmost_k_ones(mask, k)
                     TP = (pred * label * k_mask).sum().float()
                     FP = (pred * (1 - label) * k_mask).sum().float()
