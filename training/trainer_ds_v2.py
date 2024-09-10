@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from deepspeed import DeepSpeedEngine
+from lion_pytorch import Lion
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -263,22 +264,25 @@ def train(
 
         ce_loss_values = []
         for i in range(len(model.num_categories)):
-            if IS_DECODER_ONLY:
-                ce_loss_values.append(
-                    ce_loss(
-                        outputs[i][:, :-1][attention_mask[:, :-1].bool()].reshape(
-                            -1, model.num_categories[i]
-                        ),
-                        targets[..., i][attention_mask[:, :-1].bool()].reshape(-1),
+            if i in {0, 1, 5, 6}:
+                if IS_DECODER_ONLY:
+                    ce_loss_values.append(
+                        ce_loss(
+                            outputs[i][:, :-1][attention_mask[:, :-1].bool()].reshape(
+                                -1, model.num_categories[i]
+                            ),
+                            targets[..., i][attention_mask[:, :-1].bool()].reshape(-1),
+                        )
                     )
-                )
+                else:
+                    ce_loss_values.append(
+                        ce_loss(
+                            outputs[i].reshape(-1, model.num_categories[i]),
+                            targets[..., i].reshape(-1),
+                        )
+                    )
             else:
-                ce_loss_values.append(
-                    ce_loss(
-                        outputs[i].reshape(-1, model.num_categories[i]),
-                        targets[..., i].reshape(-1),
-                    )
-                )
+                ce_loss_values.append(torch.zeros((), device=inputs.device))
 
         loss = sum(ce_loss_values) / len(ce_loss_values)
         loss_per_taget = torch.tensor(ce_loss_values, device=loss.device)
@@ -420,8 +424,14 @@ def main():
 
         print_master(f"Number of parameters: {model.num_parameters():,}")
     # Initialize the optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-
+    if all_in_one_config["optimizer"]["optimizer"] == "adamw":
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=learning_rate, weight_decay=weight_decay
+        )
+    elif all_in_one_config["optimizer"]["optimizer"] == "lion":
+        optimizer = Lion(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    else:
+        assert False
     # DeepSpeed configuration
     ds_config = all_in_one_config["distributed"]
     # model = torch.compile(model)

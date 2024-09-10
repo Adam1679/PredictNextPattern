@@ -1,0 +1,22 @@
+type: t5
+prediction_length: 64
+type_vocab_size:  1
+input_size: 0
+output_size: 0
+n_positions: 512
+d_model: 384
+d_ff: 1536
+num_layers: 12
+num_heads: 12
+num_key_value_heads: 8
+d_kv: 32
+hidden_act: "relu"
+layer_norm_eps: 0.000001
+dropout_rate: 0.15
+use_cache: False
+pad_token_id: 0
+bos_token_id: 1
+eos_token_id: 2
+categorical_features: 9
+embedding_dims: [128, 32, 64, 64, 64, 32, 32, 64, 32] 
+num_categories: [4096, 2, 8, 8, 6, 2, 2, 6, 2]

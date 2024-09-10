@@ -304,12 +304,15 @@ def get_trainset(all_in_one_config):
 
 
 def get_valset(all_in_one_config):
+    mid_range = (
+        all_in_one_config["data"]["max_seq_len"] + all_in_one_config["data"]["max_seq_len"]
+    ) // 2
     if all_in_one_config["data"]["version"] == 0:
         valset = OHLCDatasetMmap(
             all_in_one_config["data"]["data_root"],
             window_range=(
-                all_in_one_config["data"]["min_seq_len"],
-                all_in_one_config["data"]["max_seq_len"],
+                mid_range,
+                mid_range,
             ),
             is_train=False,
             sample_n=all_in_one_config["validation"]["sample_n"],
@@ -322,8 +325,8 @@ def get_valset(all_in_one_config):
         valset = EnhancedOHLCDataset(
             all_in_one_config["data"]["data_root"],
             window_range=(
-                all_in_one_config["data"]["min_seq_len"],
-                all_in_one_config["data"]["max_seq_len"],
+                mid_range,
+                mid_range,
             ),
             is_train=False,
             sample_n=all_in_one_config["validation"]["sample_n"],
