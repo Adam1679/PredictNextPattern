@@ -1,8 +1,8 @@
 data:
  version: 1
  data_root: memmap_dataset
- max_seq_len: &seq_len 512
- min_seq_len: 256
+ max_seq_len: &seq_len 1024
+ min_seq_len: 1024
  num_workers: 4
  filter_symbols: null
  filter_intervals: 
@@ -30,7 +30,7 @@ logging:
  log_interval: 10
  wandb_enabled: True
  wandb_project: cpt_fix2
- wandb_run_name: '9M_t5_10k_steps_multi_interval_bsz256_cxt512_lion_4_targets'
+ wandb_run_name: '9M_t5_10k_steps_multi_interval_bsz256_cxt1024_lion'
  wandb_tags: ["your_tag1", "your_tag2"]
 
 optimizer: 

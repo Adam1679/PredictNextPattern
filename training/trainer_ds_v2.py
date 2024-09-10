@@ -264,25 +264,25 @@ def train(
 
         ce_loss_values = []
         for i in range(len(model.num_categories)):
-            if i in {0, 1, 5, 6}:
-                if IS_DECODER_ONLY:
-                    ce_loss_values.append(
-                        ce_loss(
-                            outputs[i][:, :-1][attention_mask[:, :-1].bool()].reshape(
-                                -1, model.num_categories[i]
-                            ),
-                            targets[..., i][attention_mask[:, :-1].bool()].reshape(-1),
-                        )
+            # if i in {0, 1, 5, 6}:
+            if IS_DECODER_ONLY:
+                ce_loss_values.append(
+                    ce_loss(
+                        outputs[i][:, :-1][attention_mask[:, :-1].bool()].reshape(
+                            -1, model.num_categories[i]
+                        ),
+                        targets[..., i][attention_mask[:, :-1].bool()].reshape(-1),
                     )
-                else:
-                    ce_loss_values.append(
-                        ce_loss(
-                            outputs[i].reshape(-1, model.num_categories[i]),
-                            targets[..., i].reshape(-1),
-                        )
-                    )
+                )
             else:
-                ce_loss_values.append(torch.zeros((), device=inputs.device))
+                ce_loss_values.append(
+                    ce_loss(
+                        outputs[i].reshape(-1, model.num_categories[i]),
+                        targets[..., i].reshape(-1),
+                    )
+                )
+            # else:
+            # ce_loss_values.append(torch.zeros((), device=inputs.device))
 
         loss = sum(ce_loss_values) / len(ce_loss_values)
         loss_per_taget = torch.tensor(ce_loss_values, device=loss.device)

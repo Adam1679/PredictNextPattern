@@ -15,6 +15,6 @@ Tokenize the Stock Price and then apply Generative LLM.
 4. Lion Optimizer seems good in terms of validation loss.
 5. z_reg doesn’t hurt or help.
 6. predict higher_high and lower_low is more efficient. You will get ~68 precision.
-7. multi-task learning helps?
-8. longer context window helps?
+7. multi-task learning helps? helps the precision and validation loss.
+8. longer context window helps? 
 9. predict the price is not working. It's just random prediction.
